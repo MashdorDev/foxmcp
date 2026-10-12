@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
-  "name": "FoxMCP",
-  "version": "1.3.0",
+  "name": "FoxMCP (Dor build)",
+  "version": "1.3.0.1",
   "description": "Browser extension that exposes data and functions to MCP clients via WebSocket",
   "author": "FoxMCP Project",
   "homepage_url": "https://github.com/ThinkerYzu/foxmcp",
@@ -38,7 +38,7 @@
   },
   "browser_specific_settings": {
     "gecko": {
-      "id": "foxmcp@codemud.org"
+      "id": "foxmcp@dorzairi.dev"
     }
   }
 }
