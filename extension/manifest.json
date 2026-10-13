@@ -1,10 +1,10 @@
 {
   "manifest_version": 2,
-  "name": "FoxMCP (Dor build)",
-  "version": "1.3.0.3",
-  "description": "Browser extension that exposes data and functions to MCP clients via WebSocket",
-  "author": "FoxMCP Project",
-  "homepage_url": "https://github.com/ThinkerYzu/foxmcp",
+  "name": "MCP Bridge for Firefox",
+  "version": "1.4.1",
+  "description": "Let Claude, Cursor or any MCP client use your Firefox: read pages, click, type, upload files and take screenshots, with no automation mode.",
+  "author": "Dor Zairi (based on FoxMCP by ThinkerYzu)",
+  "homepage_url": "https://github.com/MashdorDev/mcp-bridge-for-firefox",
   "license": "MIT",
   "permissions": [
     "tabs",
@@ -30,7 +30,7 @@
   ],
   "browser_action": {
     "default_popup": "popup/popup.html",
-    "default_title": "FoxMCP"
+    "default_title": "MCP Bridge for Firefox"
   },
   "options_ui": {
     "page": "options.html",

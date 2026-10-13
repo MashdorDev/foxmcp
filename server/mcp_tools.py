@@ -190,7 +190,7 @@ class FoxMCPTools:
         self.group_by_tool = {}
         self._registering_group = None
 
-        self.mcp = FastMCP("FoxMCP")
+        self.mcp = FastMCP("MCP Bridge for Firefox")
         self._setup_tools()
 
     @classmethod
