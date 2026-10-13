@@ -71,3 +71,4 @@ logs/
 *.temp
 .tmp/firefox
 firefox
+brag-output/

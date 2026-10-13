@@ -8,7 +8,13 @@ It is a regular Firefox add-on plus a small local MCP server. Firefox does **not
 
 Based on [FoxMCP](https://github.com/ThinkerYzu/foxmcp) by ThinkerYzu (MIT). The interaction, overlay, upload and reconnect changes are also offered upstream as pull requests.
 
-![The agent typing into Wikipedia's search box in a normal Firefox tab](docs/images/screenshots/1-click-and-type.png)
+[![21-second demo: the agent reads a page, types into it and uploads a folder in a normal Firefox tab](docs/media/launch.gif)](docs/media/launch.mp4)
+
+[Watch the video with sound (MP4, 21 s)](docs/media/launch.mp4)
+
+| | | |
+|---|---|---|
+| ![Typing into Wikipedia's search box with the agent overlay on](docs/images/screenshots/1-click-and-type.png) | ![A page read as a list of elements with refs](docs/images/screenshots/2-snapshot.png) | ![A whole folder uploaded through the page's own button](docs/images/screenshots/3-folder-upload.png) |
 
 ## What it can do
 
