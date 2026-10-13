@@ -359,11 +359,20 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
   try {
     switch (action) {
       case 'extractText':
+        showOverlay();
         sendResponse({ text: document.body.innerText });
         break;
 
       case 'extractHTML':
+        showOverlay();
         sendResponse({ html: document.documentElement.outerHTML });
+        break;
+
+      // The agent opened, navigated or ran a script in this tab, actions that
+      // happen in the background script and don't otherwise reach the page.
+      case 'agentActive':
+        showOverlay();
+        sendResponse({ ok: true });
         break;
 
       case 'getPageTitle':
