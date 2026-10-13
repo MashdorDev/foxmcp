@@ -1,10 +1,14 @@
 # MCP Bridge for Firefox
 
+<img src="docs/images/icon-512.png" width="96" align="right" alt="">
+
 Let Claude, Cursor or any MCP client use your everyday Firefox. The agent can read pages, click, type, upload files and whole folders, and take screenshots, in the tabs you already have open and signed in.
 
 It is a regular Firefox add-on plus a small local MCP server. Firefox does **not** run in automation mode: no `navigator.webdriver`, no striped address bar, no special launch flags. Tools built on Marionette or WebDriver BiDi (Playwright, Selenium, firefox-devtools-mcp) need those, and sites with bot checks notice.
 
 Based on [FoxMCP](https://github.com/ThinkerYzu/foxmcp) by ThinkerYzu (MIT). The interaction, overlay, upload and reconnect changes are also offered upstream as pull requests.
+
+![The agent typing into Wikipedia's search box in a normal Firefox tab](docs/images/screenshots/1-click-and-type.png)
 
 ## What it can do
 
