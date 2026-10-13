@@ -33,9 +33,12 @@ async function loadSettings() {
             testHostname: null
         });
 
-        // Use test overrides if they exist, otherwise use regular config
-        const displayHostname = result.testHostname || result.hostname;
-        const displayPort = result.testPort || result.port;
+        // Per-profile values (storage.local) win over the synced ones older
+        // versions saved; test overrides win over both.
+        const local = await browser.storage.local.get({ hostname: null, port: null, browserName: '' });
+        const displayHostname = result.testHostname || local.hostname || result.hostname;
+        const displayPort = result.testPort || local.port || result.port;
+        document.getElementById('browserName').value = local.browserName;
 
         document.getElementById('hostname').value = displayHostname;
         document.getElementById('port').value = displayPort;
@@ -81,10 +84,16 @@ async function saveSettings(event) {
             pingTimeout: 5000
         });
 
-        // Save the new settings while preserving test overrides
-        await browser.storage.sync.set({
+        // Name, hostname and port are per profile; Firefox Sync would copy
+        // synced values to every profile on the account.
+        await browser.storage.local.set({
             hostname: hostname,
             port: port,
+            browserName: document.getElementById('browserName').value.trim().slice(0, 60)
+        });
+
+        // Save the new settings while preserving test overrides
+        await browser.storage.sync.set({
             // Preserve existing test overrides and other settings
             testPort: existingConfig.testPort,
             testHostname: existingConfig.testHostname,

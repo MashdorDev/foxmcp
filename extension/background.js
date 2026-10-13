@@ -112,6 +112,34 @@ let retryAttempts = 0;
 const FAST_RETRIES = 50;
 const SLOW_RETRY_INTERVAL = 30000;
 
+// Who this browser is, sent to the server on every connection so it can tell
+// several Firefox profiles apart. Kept in storage.local, never storage.sync:
+// Firefox Sync would copy a synced id or name to every profile on the account.
+async function browserIdentity() {
+  const stored = await browser.storage.local.get({ instanceId: '', browserName: '' });
+  let instanceId = stored.instanceId;
+  if (!instanceId) {
+    instanceId = crypto.randomUUID();
+    await browser.storage.local.set({ instanceId });
+  }
+  return { instance_id: instanceId, name: stored.browserName, version: browser.runtime.getManifest().version };
+}
+
+async function sendHello(socket) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({
+    id: `hello_${Date.now()}`,
+    type: 'hello',
+    action: 'browser.hello',
+    data: await browserIdentity(),
+    timestamp: new Date().toISOString()
+  }));
+}
+
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.browserName) sendHello(websocket);
+});
+
 function connectToMCPServer() {
   try {
     console.log('🔍 CONNECT ATTEMPT - Stack trace:');
@@ -137,6 +165,7 @@ function connectToMCPServer() {
       isConnected = true;
       retryAttempts = 0; // Reset retry counter on successful connection
       connectionRetryAttempts = 0; // Reset connection retry counter
+      sendHello(socket).catch(error => console.error('Could not send hello:', error));
 
       // Send an immediate debug message to test after a small delay
       setTimeout(() => {
@@ -207,10 +236,10 @@ function updateConfig(newConfig) {
   console.log('Configuration updated:', CONFIG);
   console.log('New WebSocket URL will be:', `ws://${CONFIG.hostname}:${CONFIG.port}`);
 
-  // Save to storage for persistence
+  // Save to storage for persistence. Hostname and port are per profile, so
+  // two profiles on one Firefox account can use different servers.
+  browser.storage.local.set({ hostname: CONFIG.hostname, port: CONFIG.port });
   browser.storage.sync.set({
-    hostname: CONFIG.hostname,
-    port: CONFIG.port,
     retryInterval: CONFIG.retryInterval,
     maxRetries: CONFIG.maxRetries,
     pingTimeout: CONFIG.pingTimeout
@@ -253,9 +282,11 @@ async function loadConfig() {
     throw new Error('Test environment detected but configuration not ready');
   }
 
-  // Apply configuration with test overrides taking priority
-  CONFIG.hostname = result.testHostname || result.hostname;
-  CONFIG.port = result.testPort || result.port;
+  // Per-profile hostname and port (storage.local) win over the synced ones
+  // older versions saved; test overrides win over both.
+  const local = await browser.storage.local.get({ hostname: null, port: null });
+  CONFIG.hostname = result.testHostname || local.hostname || result.hostname;
+  CONFIG.port = result.testPort || local.port || result.port;
   CONFIG.retryInterval = result.retryInterval;
   CONFIG.maxRetries = result.maxRetries;
   CONFIG.pingTimeout = result.pingTimeout;

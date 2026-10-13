@@ -161,6 +161,7 @@ class FoxMCPTools:
         'content': '_setup_content_tools',
         'requests': '_setup_request_monitoring_tools',
         'debug': '_setup_debug_tools',
+        'browsers': '_setup_browser_tools',
     }
 
     def __init__(self, websocket_server, disabled_groups=None, enabled_tools=None):
@@ -1512,6 +1513,48 @@ class FoxMCPTools:
 
             return f"Unable to delete bookmark {bookmark_id}"
 
+    def _setup_browser_tools(self):
+        """Setup tools that list and choose between connected browsers"""
+
+        @self._tool()
+        async def browsers_list() -> str:
+            """List the browsers connected to this server, marking the active one
+
+            Each Firefox profile running the add-on is one browser. Every other
+            tool acts on the active browser; tab, window and bookmark ids belong
+            to it and mean nothing in another. Names come from each add-on's
+            options page.
+            """
+            server = self.websocket_server
+            browsers = list(getattr(server, 'browsers', {}).values())
+            if not browsers:
+                return "No browser is connected"
+
+            lines = []
+            for browser in browsers:
+                active = " (active)" if browser.key == server.active_browser else ""
+                version = f", add-on {browser.version}" if browser.version else ", add-on older than 1.4.3"
+                minutes = int((time.time() - browser.connected_at) // 60)
+                lines.append(f"- {browser.name}{active}: id {browser.key[:8]}{version}, "
+                             f"connected {minutes} min ago")
+            return f"Connected browsers ({len(browsers)}):\n" + "\n".join(lines)
+
+        @self._tool()
+        async def browsers_select(browser: str) -> str:
+            """Make another connected browser the one every other tool acts on
+
+            Args:
+                browser: The browser's name, as browsers_list shows it, or the
+                    start of its id. Names are not case sensitive.
+
+            Running request monitors stay with the browser they were started in.
+            """
+            try:
+                chosen = self.websocket_server.select_browser(browser)
+            except ValueError as e:
+                return str(e)
+            return f"Now acting on {chosen.name} (id {chosen.key[:8]})"
+
     def _setup_debug_tools(self):
         """Setup connection diagnostics tools"""
 
@@ -1522,12 +1565,7 @@ class FoxMCPTools:
             Says whether the browser extension is connected, and from where. Every
             other tool fails with a timeout when it is not, so check here first.
             """
-            # The server holds one connection, not a set: an arriving extension
-            # closes the previous one. This used to look for a `connected_clients`
-            # collection, which FoxMCPServer has never had, so the tool answered
-            # "doesn't track connected clients" whether or not anything was
-            # connected -- an unhelpful answer from the tool you reach for when
-            # the connection is the thing in doubt.
+            # Reports the active browser; browsers_list shows every connection.
             connection = getattr(self.websocket_server, 'extension_connection', None)
 
             if connection is None:
@@ -1540,7 +1578,9 @@ class FoxMCPTools:
 
             address = getattr(connection, 'remote_address', None)
             where = f" from {address[0]}:{address[1]}" if address else ""
-            return f"Browser extension connected{where}"
+            others = len(getattr(self.websocket_server, 'browsers', {}) or {}) - 1
+            extra = f"; {others} more browser(s) connected, see browsers_list" if others > 0 else ""
+            return f"Browser extension connected{where}{extra}"
 
     def _setup_navigation_tools(self):
         """Setup navigation tools"""

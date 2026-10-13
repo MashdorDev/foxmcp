@@ -4,7 +4,7 @@ Complete reference for all MCP tools and browser functions available through Fox
 
 ## Available MCP Tools
 
-All 44 tools are offered by default. Each section below corresponds to a *group*
+All 46 tools are offered by default. Each section below corresponds to a *group*
 that `--disable-tools` can leave unregistered, which is how you shrink what an MCP
 client carries in its context. The group name is the tool-name prefix, not the
 heading: Tab Management is `tabs`, Web Request Monitoring is `requests`, Debugging
@@ -142,6 +142,13 @@ from `webRequest` and is captured for every matching request.
 - `update_window(window_id, state=None, focused=None, width=None, height=None, top=None, left=None)` - Update window properties
   - `focused=False` is refused: Firefox cannot take focus away from a window. Call
     `focus_window` on the window that should have it
+
+### Browser Selection Tools
+Several Firefox profiles can be connected at once. Every other tool acts on the
+active one, and tab, window and bookmark ids belong to that browser.
+- `browsers_list()` - List connected browsers with name, id, add-on version, and which is active
+- `browsers_select(browser)` - Make a browser active, by its name (case-insensitive) or the start of its id
+  - Running request monitors stay with the browser they were started in
 
 ### Debugging Tools
 - `debug_websocket_status()` - Check browser extension connection status

@@ -24,6 +24,13 @@ Based on [FoxMCP](https://github.com/ThinkerYzu/foxmcp) by ThinkerYzu (MIT). The
 - **Tabs, windows, navigation, screenshots, history, bookmarks** and **network request monitoring**, from FoxMCP.
 - **Any MCP client:** Claude Code, Claude Desktop, Cursor, VS Code, Codex, Gemini CLI and others.
 
+## Several Firefox profiles
+
+Run the add-on in as many profiles as you like. All of them connect to the one
+server; `browsers_list` shows them and `browsers_select` picks the one the agent
+works in. Set each profile's name on the add-on's options page. Details:
+[docs/configuration.md](docs/configuration.md#several-firefox-profiles).
+
 ## Install
 
 ### 1. The add-on

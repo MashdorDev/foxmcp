@@ -150,6 +150,12 @@
             </div>
             
             <div class="form-group">
+                <label for="browserName">Browser name:</label>
+                <input type="text" id="browserName" maxlength="60" placeholder="e.g. Main, Work, Lost Tribe">
+                <div class="help-text">Shown to your AI client when several Firefox profiles are connected, so it can pick this one</div>
+            </div>
+
+            <div class="form-group">
                 <label for="wsUrl">WebSocket URL:</label>
                 <input type="text" id="wsUrl" readonly style="background-color: #f0f0f0;">
                 <div class="help-text">This URL is automatically generated from hostname and port</div>

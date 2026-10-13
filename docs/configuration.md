@@ -179,8 +179,8 @@ outliving every client and every session, with no port to contend for.
 ## Reducing the Tool Surface
 
 Every tool's description sits in an MCP client's context for the whole session,
-whether or not the tool is ever called. The full set of 44 tools costs roughly
-6,870 tokens. `--disable-tools` leaves a group unregistered, so a client never
+whether or not the tool is ever called. The full set of 46 tools costs roughly
+7,125 tokens. `--disable-tools` leaves a group unregistered, so a client never
 sees it:
 
 ```bash
@@ -198,6 +198,7 @@ token, so treat them as proportions rather than exact counts:
 | `content` | get_text, get_html, execute_script, execute_predefined, snapshot, click, type, press_key, upload_files | 1,444 |
 | `windows` | list, get, get_current, create, close, focus, update | 949 |
 | `requests` | start_monitoring, stop_monitoring, list_captured, get_content | 795 |
+| `browsers` | list, select | ~255 |
 | `bookmarks` | list, search, create, create_folder, update, delete | 703 |
 | `navigation` | back, forward, reload, go_to_url | 430 |
 | `history` | query, get_recent, delete_item | 304 |
@@ -259,7 +260,9 @@ overrides `FOXMCP_ENABLE_TOOLS`, when both are given.
 
 ## Configuring Extension
 
-The Firefox extension includes comprehensive configuration options with **storage.sync** persistence:
+The Firefox extension stores its connection settings per profile (`storage.local`), so
+two profiles signed in to the same Firefox account can use different names and
+ports. Retry and timeout settings still sync (`storage.sync`).
 
 ### 1. Access Options
 
@@ -271,6 +274,7 @@ The Firefox extension includes comprehensive configuration options with **storag
 
 - **Hostname**: Server hostname (default: `localhost`)
 - **WebSocket Port**: Server WebSocket port (default: `8765`)
+- **Browser name**: How this profile appears in `browsers_list`, e.g. "Main" or "Work"
 - **Advanced Options**: Retry intervals, max retries, ping timeouts
 - **Test Configuration**: Built-in test override system for development
 
@@ -344,6 +348,32 @@ export FOXMCP_EXT_SCRIPTS=/path/to/predefined/
 
 Ports are set on the command line, not through the environment — see
 [Multiple Server Instances](#multiple-server-instances).
+
+## Several Firefox Profiles
+
+Every profile running the add-on can connect to the same server at once. The
+first to connect is active; one arriving later never takes over. Name each
+profile in its options page, then:
+
+```text
+browsers_list                      -> - Main (active): id 3f2a9c1e ...
+                                      - Lost Tribe: id 7b0d4e22 ...
+browsers_select browser="Lost Tribe"
+```
+
+When the active browser disconnects, the most recently connected one takes over.
+A profile that reconnects keeps its id, so a selection survives a dropped
+connection.
+
+To keep profiles fully apart instead, give each its own port in the options page
+and run one server per port, each as its own MCP entry:
+
+```bash
+claude mcp add firefox-work -- /path/to/venv/bin/python /path/to/server/server.py --stdio --port 8766
+```
+
+Each entry adds the full tool set to every session (about 7,000 tokens), so one
+server with `browsers_select` is the cheaper default.
 
 ## Multiple Server Instances
 

@@ -15,6 +15,8 @@ import socket
 import sys
 import os
 import threading
+import time
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, Any, Optional
 
@@ -83,6 +85,16 @@ def find_available_port(start_port=3000, max_attempts=100):
 
     raise RuntimeError(f"Could not find available port starting from {start_port}")
 
+@dataclass
+class BrowserConnection:
+    """One connected browser: a Firefox profile running the add-on"""
+    key: str
+    websocket: Any
+    name: str
+    version: str = ''
+    connected_at: float = field(default_factory=time.time)
+
+
 class FoxMCPServer:
     # How often to check whether the MCP clients owning monitors are still there
     MONITOR_REAP_INTERVAL = 5.0
@@ -138,8 +150,17 @@ class FoxMCPServer:
             logger.info(f"MCP server will use port {self.mcp_port}")
         self.start_mcp = start_mcp
 
-        # SINGLE CONNECTION CONSTRAINT: Only one extension connection allowed
-        self.extension_connection = None
+        # Every connected browser, in the order they connected. Tools act on the
+        # active one; browsers_select changes which. A browser arriving never
+        # takes over from the active one: two profiles running the add-on used
+        # to close each other's connection in turn, every few seconds, so tab
+        # ids and monitors vanished between calls.
+        self.browsers: Dict[str, BrowserConnection] = {}
+        self.active_browser: Optional[str] = None
+        self._browsers_seen = 0
+        # Which browser each request monitor runs in, so calls naming the
+        # monitor reach it even after another browser is selected.
+        self.monitor_browsers: Dict[str, str] = {}
         self.pending_requests = {}  # Map of request IDs to Future objects
 
         # Connection event management
@@ -182,55 +203,137 @@ class FoxMCPServer:
             )
         return None
 
-    async def handle_extension_connection(self, websocket):
-        """Handle WebSocket connection from browser extension
+    @property
+    def extension_connection(self):
+        """The active browser's socket, or None when no browser is connected"""
+        browser = self.browsers.get(self.active_browser)
+        return browser.websocket if browser else None
 
-        IMPORTANT: Only ONE extension connection is allowed at a time.
-        If a new connection arrives, the existing one is closed first.
-        This prevents multiple extensions or connection races.
+    @extension_connection.setter
+    def extension_connection(self, websocket):
+        # Kept so code and tests that hand the server one socket still work: a
+        # socket becomes a connected browser and is selected, None drops the
+        # active browser.
+        if websocket is None:
+            if self.active_browser in self.browsers:
+                self._remove_browser(self.browsers[self.active_browser].websocket)
+            return
+        self.active_browser = self._add_browser(websocket).key
+
+    def _add_browser(self, websocket) -> BrowserConnection:
+        """Record a new connection under a provisional key until it says hello"""
+        self._browsers_seen += 1
+        key = f"browser-{self._browsers_seen}"
+        browser = BrowserConnection(key=key, websocket=websocket, name=f"Firefox {self._browsers_seen}")
+        self.browsers[key] = browser
+        return browser
+
+    def _browser_for_socket(self, websocket) -> Optional[BrowserConnection]:
+        for browser in self.browsers.values():
+            if browser.websocket is websocket:
+                return browser
+        return None
+
+    def _remove_browser(self, websocket):
+        """Forget a closed connection and its monitors, and pick another active browser"""
+        browser = self._browser_for_socket(websocket)
+        if browser is None:
+            return
+        del self.browsers[browser.key]
+
+        # The extension clears its own monitors the moment a connection ends,
+        # so records naming them have nothing left to reach.
+        for monitor_id, key in list(self.monitor_browsers.items()):
+            if key == browser.key:
+                self.monitor_browsers.pop(monitor_id, None)
+                self.monitor_owners.pop(monitor_id, None)
+
+        if self.active_browser == browser.key:
+            # Fall back to the browser that connected most recently.
+            self.active_browser = next(reversed(self.browsers), None)
+            if self.active_browser:
+                logger.info(f"Active browser is now {self.browsers[self.active_browser].name}")
+
+    def _handle_hello(self, websocket, data: Dict[str, Any]):
+        """Name a connection and key it by the profile's id
+
+        A profile reconnecting keeps its key, so a selection survives a dropped
+        connection, and its old socket, if still open, is closed rather than left
+        as a second entry for the same browser.
+        """
+        browser = self._browser_for_socket(websocket)
+        if browser is None:
+            return
+        browser.version = str(data.get('version') or '')
+        if data.get('name'):
+            browser.name = str(data['name'])[:60]
+
+        instance_id = str(data.get('instance_id') or '')
+        if not instance_id or instance_id == browser.key:
+            return
+
+        old = self.browsers.get(instance_id)
+        was_active = self.active_browser in (browser.key, instance_id)
+        if old is not None and old.websocket is not websocket:
+            del self.browsers[instance_id]
+            asyncio.create_task(old.websocket.close())
+
+        self.browsers = {(instance_id if k == browser.key else k): v for k, v in self.browsers.items()}
+        for monitor_id, key in self.monitor_browsers.items():
+            if key == browser.key:
+                self.monitor_browsers[monitor_id] = instance_id
+        browser.key = instance_id
+        if was_active or self.active_browser not in self.browsers:
+            self.active_browser = instance_id
+        logger.info(f"Browser {browser.name} ({instance_id[:8]}) said hello, add-on {browser.version}")
+
+    def select_browser(self, query: str) -> BrowserConnection:
+        """Make a browser active by its name or the start of its id"""
+        wanted = query.strip().lower()
+        matches = [b for b in self.browsers.values() if b.name.lower() == wanted]
+        if not matches:
+            matches = [b for b in self.browsers.values() if wanted and b.key.lower().startswith(wanted)]
+        if len(matches) != 1:
+            names = ', '.join(f'"{b.name}"' for b in self.browsers.values()) or 'none'
+            problem = 'matches more than one browser' if matches else 'matches no browser'
+            raise ValueError(f'"{query}" {problem}. Connected: {names}')
+        self.active_browser = matches[0].key
+        return matches[0]
+
+    async def handle_extension_connection(self, websocket):
+        """Handle a WebSocket connection from a browser running the add-on
+
+        Several browsers may be connected at once. The first becomes active;
+        later ones wait until selected with browsers_select, or until the active
+        one disconnects.
         """
         logger.info(f"Extension connected from {websocket.remote_address}")
 
-        # CONSTRAINT: Only one extension connection allowed at a time
-        # Close existing connection if there is one to maintain single connection policy
-        if self.extension_connection and self.extension_connection.close_code is None:
-            logger.info("Closing existing extension connection for new one")
-            try:
-                await self.extension_connection.close()
-            except Exception as e:
-                logger.warning(f"Error closing existing connection: {e}")
-
-        self.extension_connection = websocket
+        browser = self._add_browser(websocket)
+        if self.active_browser is None:
+            self.active_browser = browser.key
 
         # Notify all waiters that a connection has been established
         self._notify_connection_waiters()
 
         try:
             async for message in websocket:
-                await self.handle_extension_message(message)
+                await self.handle_extension_message(message, websocket)
         except ConnectionAbortedError:
             logger.info("Extension disconnected")
         except Exception as e:
             logger.error(f"Error handling extension connection: {e}")
         finally:
-            # Only the handler still holding the slot may clear it.
-            #
-            # An extension reconnecting closes its old socket and opens the new
-            # one at once, so this handler can finish after its replacement has
-            # already installed itself. Clearing unconditionally would blank out
-            # a live connection, and nothing sets it again until the extension
-            # reconnects. The monitors go with it because the extension clears
-            # its own the moment a connection ends, leaving these records with
-            # nothing to name.
-            if self.extension_connection is websocket:
-                self.extension_connection = None
-                self.monitor_owners.clear()
+            self._remove_browser(websocket)
 
-    async def handle_extension_message(self, message: str):
+    async def handle_extension_message(self, message: str, websocket=None):
         """Process message from browser extension"""
         try:
             data = json.loads(message)
             message_type = data.get('type', 'unknown')
+            if message_type == 'hello':
+                self._handle_hello(websocket, data.get('data') or {})
+                return
             message_id = data.get('id')
             action = data.get('action', 'unknown')
 
@@ -333,15 +436,25 @@ class FoxMCPServer:
         else:
             return {"success": False, "error": "Failed to send ping"}
 
+    def _socket_for(self, message: Dict[str, Any]):
+        """The browser a message goes to: a monitor's own browser, else the active one"""
+        data = message.get('data')
+        monitor_id = data.get('monitor_id') if isinstance(data, dict) else None
+        key = self.monitor_browsers.get(monitor_id) if monitor_id else None
+        if key in self.browsers:
+            return self.browsers[key].websocket
+        return self.extension_connection
+
     async def send_to_extension(self, message: Dict[str, Any]) -> bool:
         """Send message to browser extension"""
-        if not self.extension_connection:
+        target = self._socket_for(message)
+        if not target:
             logger.warning("No extension connection available")
             return False
 
         try:
             message['timestamp'] = datetime.now().isoformat()
-            await self.extension_connection.send(json.dumps(message))
+            await target.send(json.dumps(message))
             return True
         except Exception as e:
             logger.error(f"Error sending to extension: {e}")
@@ -388,10 +501,13 @@ class FoxMCPServer:
         """
         if monitor_id:
             self.monitor_owners[monitor_id] = session_id or self.NO_MCP_SESSION
+            if self.active_browser:
+                self.monitor_browsers[monitor_id] = self.active_browser
 
     def forget_monitor(self, monitor_id: str):
         """Drop a monitor the client stopped itself, so the reaper ignores it"""
         self.monitor_owners.pop(monitor_id, None)
+        self.monitor_browsers.pop(monitor_id, None)
 
     def _live_mcp_session_ids(self) -> Optional[set]:
         """Sessions of the MCP clients still connected, or None if that cannot be told
@@ -808,14 +924,14 @@ class FoxMCPServer:
                 logger.info("Stopping WebSocket server...")
 
                 # Close all existing connections first
-                if self.extension_connection:
+                for browser in list(self.browsers.values()):
                     try:
-                        await self.extension_connection.close()
-                        logger.info("Extension connection closed")
+                        await browser.websocket.close()
+                        logger.info(f"Connection to {browser.name} closed")
                     except Exception as e:
                         logger.warning(f"Error closing extension connection: {e}")
-                    finally:
-                        self.extension_connection = None
+                self.browsers.clear()
+                self.active_browser = None
 
                 # close() only starts the shutdown; wait_closed() is what
                 # actually releases the port. Bounded so a connection that
