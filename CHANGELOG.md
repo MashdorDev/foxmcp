@@ -8,9 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **The agent says what it is doing, and the overlay stays until it is done.** Every tool takes an optional `status`, a few words in the first person ("Reading the board") shown on the overlay of the tab it works in; without one the overlay names the action. The overlay no longer fades a few seconds after the last action: it stays until the agent calls the new `tabs_release`, its server goes away, or five minutes pass with nothing done in the tab. The cursor stays on screen and shows whether the agent is thinking, reading, clicking, typing or waiting, and the tab's icon gets a pulsing ring in the tab strip.
+- **"Follow the agent" option.** When on, the tab the agent acts in comes to the front. Off by default.
+- **Several sessions on one browser.** A server that finds its port taken moves to one of the next four, and the extension connects to all of them, so two Claude sessions can drive the same Firefox at once. Each reply goes back to the server that asked.
 - **Native tab groups: `tabs_group`, `tabs_ungroup`, `tabs_groups_update`, `tabs_groups_query`.** Group tabs, optionally with a title and colour; take them out again; restyle or collapse a group; and list groups with their IDs. None of them activates a tab or focuses a window. If the tabs are grouped but the title or colour cannot be set, `tabs_group` still reports the group and names what failed. Contributed by kernel-oops in [#8](https://github.com/ThinkerYzu/foxmcp/pull/8). Requires Firefox 139+, and the extension now asks for the `tabGroups` permission.
 
 ### Fixed
+- **On Windows a second server no longer takes over port 8765 from the first.** `SO_REUSEADDR` lets two sockets bind the same port there; the free-port test now uses `SO_EXCLUSIVEADDRUSE`.
+- **`content_type` checks that the whole text arrived.** Rich editors could replace earlier pieces of a long text and report success with part of it in the field; the caret is now kept at the end between pieces and a short result is reported as an error.
+- **Uploaded files are readable by the page.** Files are rebuilt in the page's own realm, so a page that inspects them (Miro's image upload) can read them.
 - **The agent overlay shows from the agent's first action.** It used to appear only once the agent took a snapshot, clicked or typed, so a session that opened a tab, navigated and read the page showed nothing for its first several actions. Opening a tab, navigating, reading text or HTML and running a script now show it too; after a navigation it is shown again once the new page has loaded.
 - **`create_window(focused=False)` now leaves focus where it was.** Firefox focuses every new window and ignores `focused: false`, so the window opened in front regardless. The extension now hands focus back to the window that had it, and the result says `(focused)` when the new window has focus.
 - **`update_window(focused=False)` is refused instead of ignored.** Firefox has no way to take focus away from a window and drops the flag without an error. The tool now says so and points to `focus_window`.

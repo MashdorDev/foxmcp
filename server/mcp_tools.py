@@ -8,6 +8,9 @@ Licensed under the MIT License - see LICENSE file for details
 """
 
 import asyncio
+import contextvars
+import functools
+import inspect
 import logging
 import uuid
 import os
@@ -16,7 +19,7 @@ import time
 import json
 import base64
 from datetime import datetime
-from typing import Dict, Any, Optional, List, TypedDict, Union
+from typing import Annotated, Dict, Any, Optional, List, TypedDict, Union
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
@@ -36,6 +39,21 @@ MAX_LOGGED_ARG_LENGTH = 120
 # waits for the extension's answer, so a large file never queues up as one
 # message several hundred megabytes long.
 UPLOAD_CHUNK_BYTES = 512 * 1024
+
+# The tool running and the status line its caller gave, read by
+# send_request_and_wait so every request a tool sends carries them to the page.
+AGENT_CALL = contextvars.ContextVar('agent_call', default=None)
+
+# The overlay label is one line; a status longer than this is cut.
+MAX_STATUS_LENGTH = 80
+
+STATUS_DESCRIPTION = (
+    'Optional. A few words in the first person saying what you are doing, shown '
+    'to the person watching on the page, e.g. "Reading the board" or "Uploading '
+    'the new cover image". Keep the same line across the calls that make up one '
+    'step, and call tabs_release when you are done with a tab so the "AI agent '
+    'is working" overlay goes away.')
+STATUS_TYPE = Annotated[Optional[str], Field(description=STATUS_DESCRIPTION)]
 
 
 def format_script_args_for_log(args_list):
@@ -245,9 +263,55 @@ class FoxMCPTools:
             self.group_by_tool[fn.__name__] = group
             if group in self.disabled_groups and fn.__name__ not in self.enabled_tools:
                 return fn
-            return self.mcp.tool()(fn)
+            return self.mcp.tool()(self._with_status(fn))
 
         return register
+
+    def _with_status(self, fn):
+        """Give a tool the optional `status` argument shown to the person watching
+
+        The agent says in a few words what it is doing ("Reading the board"), and
+        the line appears on the overlay of the tab it is working in. It travels
+        with every request the tool sends, through AGENT_CALL, so no tool has to
+        pass it on itself. A tool called without one still shows a label: the
+        extension makes one up from the action ("Reading this page").
+
+        The tab a tool works in is also recorded against the MCP session that
+        called it, so the tab can be released when that session ends.
+        """
+        signature = inspect.signature(fn)
+        if 'status' in signature.parameters:
+            return fn
+
+        @functools.wraps(fn)
+        async def wrapper(*args, status: Optional[str] = None, **kwargs):
+            call = {'tool': fn.__name__}
+            if isinstance(status, str) and status.strip():
+                call['status'] = status.strip()[:MAX_STATUS_LENGTH]
+            note_agent_tab = getattr(self.websocket_server, 'note_agent_tab', None)
+            if kwargs.get('tab_id') is not None and note_agent_tab:
+                note_agent_tab(self._session_id(), kwargs['tab_id'])
+            token = AGENT_CALL.set(call)
+            try:
+                return await fn(*args, **kwargs)
+            finally:
+                AGENT_CALL.reset(token)
+
+        status_param = inspect.Parameter(
+            'status', inspect.Parameter.KEYWORD_ONLY, default=None, annotation=STATUS_TYPE)
+        wrapper.__signature__ = signature.replace(
+            parameters=[*signature.parameters.values(), status_param])
+        wrapper.__annotations__ = {**getattr(fn, '__annotations__', {}), 'status': STATUS_TYPE}
+        return wrapper
+
+    @staticmethod
+    def _session_id():
+        """The calling MCP session's id, or None outside a session (the test harness)"""
+        try:
+            from fastmcp.server.dependencies import get_context
+            return get_context().session_id
+        except Exception:
+            return None
 
     def _validate_tools(self):
         """Check enabled_tools against the tools that exist, once they have been defined
@@ -775,6 +839,39 @@ class FoxMCPTools:
                 return f"Failed to switch to tab: {error_msg}"
 
             return f"Unable to switch to tab {tab_id}"
+
+        # Tab Release Tool
+        @self._tool()
+        async def tabs_release(tab_id: int) -> str:
+            """Say you are done working in a tab, so the "AI agent is working"
+            overlay, cursor and tab marker leave it
+
+            Call this when a job in a tab is finished. Until then the overlay stays
+            up so the person can see the tab is in use; it also clears by itself
+            when your session ends, or after 5 minutes with no action in the tab.
+
+            Args:
+                tab_id: ID of the tab you are done with
+            """
+            request = {
+                "id": str(uuid.uuid4()),
+                "type": "request",
+                "action": "tabs.release",
+                "data": {"tabId": tab_id},
+                "timestamp": datetime.now().isoformat()
+            }
+
+            response = await self.websocket_server.send_request_and_wait(request)
+
+            if "error" in response:
+                return f"Error releasing tab: {response['error']}"
+            if response.get("type") == "response":
+                forget_agent_tab = getattr(self.websocket_server, 'forget_agent_tab', None)
+                if forget_agent_tab:
+                    forget_agent_tab(tab_id)
+                return f"Released tab {tab_id}"
+            error_msg = response.get("data", {}).get("message", "Unknown error")
+            return f"Failed to release tab: {error_msg}"
 
         @self._tool()
         async def tabs_group(

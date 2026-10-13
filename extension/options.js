@@ -35,10 +35,11 @@ async function loadSettings() {
 
         // Per-profile values (storage.local) win over the synced ones older
         // versions saved; test overrides win over both.
-        const local = await browser.storage.local.get({ hostname: null, port: null, browserName: '' });
+        const local = await browser.storage.local.get({ hostname: null, port: null, browserName: '', followAgent: false });
         const displayHostname = result.testHostname || local.hostname || result.hostname;
         const displayPort = result.testPort || local.port || result.port;
         document.getElementById('browserName').value = local.browserName;
+        document.getElementById('followAgent').checked = local.followAgent;
 
         document.getElementById('hostname').value = displayHostname;
         document.getElementById('port').value = displayPort;
@@ -89,7 +90,8 @@ async function saveSettings(event) {
         await browser.storage.local.set({
             hostname: hostname,
             port: port,
-            browserName: document.getElementById('browserName').value.trim().slice(0, 60)
+            browserName: document.getElementById('browserName').value.trim().slice(0, 60),
+            followAgent: document.getElementById('followAgent').checked
         });
 
         // Save the new settings while preserving test overrides

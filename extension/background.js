@@ -183,7 +183,7 @@ function connectToMCPServer() {
     socket.onmessage = async (event) => {
       // Test debug message right when we receive a message
       console.log('📨 Extension received message from server');
-      await handleMessage(JSON.parse(event.data));
+      await handleMessage(JSON.parse(event.data), socket);
     };
 
     socket.onclose = () => {
@@ -202,6 +202,7 @@ function connectToMCPServer() {
       console.log('Disconnected from MCP server');
       isConnected = false;
       clearAllMonitors('the connection to the server dropped');
+      releaseAgentTabsOf(socket);
       scheduleReconnect();
     };
 
@@ -213,6 +214,64 @@ function connectToMCPServer() {
     scheduleReconnect();
   }
 }
+
+// More servers, one per MCP client: under --stdio every client launches its own,
+// and a server that finds the configured port taken moves to one of the next
+// EXTRA_SERVER_PORTS (see server.py). Each gets a connection of its own here, so
+// every Claude session can use the browser at the same time. Replies go back on
+// the connection the request came in on (replySockets).
+//
+// Firefox opens only one WebSocket to a host at a time, and on Windows a probe
+// of a localhost port nobody listens on takes seconds to fail. So the scan runs
+// only while the main connection is up, and probes one port at a time; probing
+// all of them at once queued the main connection behind them and it never got
+// through.
+const EXTRA_SERVER_PORTS = 4;
+const EXTRA_SERVER_SCAN_MS = 15000;
+const extraSockets = new Map(); // port -> socket
+let extraScanRunning = false;
+
+function connectExtraServer(port) {
+  return new Promise(settled => {
+    let socket;
+    try {
+      socket = new WebSocket(`ws://${CONFIG.hostname}:${port}`);
+    } catch (error) {
+      settled();
+      return;
+    }
+    extraSockets.set(port, socket);
+    socket.onopen = () => {
+      console.log(`Connected to an additional MCP server on port ${port}`);
+      sendHello(socket).catch(error => console.error('Could not send hello:', error));
+      settled();
+    };
+    socket.onmessage = async (event) => handleMessage(JSON.parse(event.data), socket);
+    socket.onclose = () => {
+      if (extraSockets.get(port) === socket) extraSockets.delete(port);
+      releaseAgentTabsOf(socket);
+      settled();
+    };
+    socket.onerror = () => { /* nothing listening there; the next scan tries again */ };
+  });
+}
+
+async function scanExtraServers() {
+  if (extraScanRunning) return;
+  extraScanRunning = true;
+  try {
+    for (let i = 1; i <= EXTRA_SERVER_PORTS; i++) {
+      if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
+      const port = CONFIG.port + i;
+      const existing = extraSockets.get(port);
+      if (!existing || existing.readyState === WebSocket.CLOSED) await connectExtraServer(port);
+    }
+  } finally {
+    extraScanRunning = false;
+  }
+}
+
+setInterval(scanExtraServers, EXTRA_SERVER_SCAN_MS);
 
 function scheduleReconnect() {
   retryAttempts++;
@@ -312,10 +371,17 @@ function disconnect() {
   clearAllMonitors('the connection to the server was closed');
 }
 
-async function handleMessage(message) {
+// The connection each request came in on, so its reply goes back there. Several
+// servers can be connected at once (one per MCP client, see EXTRA_SERVER_PORTS).
+const replySockets = new Map(); // request id -> socket
+// The agent call behind each request, for handlers that learn the tab late (tabs.create)
+const agentCalls = new Map(); // request id -> { tool, status }
+
+async function handleMessage(message, socket = websocket) {
   const { id, type, action, data } = message;
 
   if (type !== 'request') return;
+  replySockets.set(id, socket);
 
   // Handle ping-pong for connection testing
   if (action === 'ping') {
@@ -323,6 +389,26 @@ async function handleMessage(message) {
     return;
   }
 
+  const activity = AGENT_ACTIVITY[action];
+  const agentTab = activity && data && data.tabId != null ? data.tabId : null;
+  const agentStatus = message.agent && message.agent.status;
+  if (activity) agentCalls.set(id, { status: agentStatus, socket });
+  if (agentTab != null) {
+    await markAgentActive(agentTab, { state: activity[0], label: activity[1], agentStatus, socket });
+  }
+
+  try {
+    await routeAction(id, action, data);
+  } finally {
+    agentCalls.delete(id);
+    // Navigation keeps "waiting" until the page has loaded (see tabs.onUpdated)
+    if (agentTab != null && agentTabs.has(agentTab) && activity[0] !== 'waiting') {
+      markAgentActive(agentTab, { state: 'thinking' });
+    }
+  }
+}
+
+async function routeAction(id, action, data) {
   // Route actions to appropriate handlers (all are now async)
   switch (action.split('.')[0]) {
     case 'history':
@@ -357,8 +443,16 @@ async function handleMessage(message) {
   }
 }
 
+// The socket a reply to this request goes out on, if it is still open
+function replySocket(id) {
+  const socket = replySockets.get(id) || websocket;
+  replySockets.delete(id);
+  return socket && socket.readyState === WebSocket.OPEN ? socket : null;
+}
+
 function sendResponse(id, action, data) {
-  if (!isConnected) return;
+  const socket = replySocket(id);
+  if (!socket) return;
 
   const message = {
     id,
@@ -368,11 +462,12 @@ function sendResponse(id, action, data) {
     timestamp: new Date().toISOString()
   };
 
-  websocket.send(JSON.stringify(message));
+  socket.send(JSON.stringify(message));
 }
 
 function sendError(id, code, message, details = {}) {
-  if (!isConnected) return;
+  const socket = replySocket(id);
+  if (!socket) return;
 
   const errorMessage = {
     id,
@@ -386,7 +481,7 @@ function sendError(id, code, message, details = {}) {
     timestamp: new Date().toISOString()
   };
 
-  websocket.send(JSON.stringify(errorMessage));
+  socket.send(JSON.stringify(errorMessage));
 }
 
 function sendDebugLog(message, level = 'log') {
@@ -413,8 +508,8 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // A page's content script asks as soon as it starts, which is seconds earlier
   // than the tab's load completing (that waits for the favicon and the rest)
   if (request.action === 'isAgentTab') {
-    const lastActive = sender.tab && agentTabActivity.get(sender.tab.id);
-    sendResponse({ active: lastActive != null && Date.now() - lastActive <= AGENT_ACTIVE_MS });
+    const entry = sender.tab && agentTabs.get(sender.tab.id);
+    sendResponse(entry ? { active: true, state: entry.state, label: entry.label } : { active: false });
     return true;
   }
 
@@ -575,7 +670,11 @@ async function handleTabsAction(id, action, data) {
         }
         
         const newTab = await browser.tabs.create(createTabOptions);
-        markAgentActive(newTab.id);
+        const call = agentCalls.get(id);
+        markAgentActive(newTab.id, {
+          state: 'waiting', label: AGENT_ACTIVITY['tabs.create'][1],
+          agentStatus: call && call.status, socket: call && call.socket
+        });
         sendResponse(id, action, { tab: newTab });
         break;
 
@@ -595,6 +694,10 @@ async function handleTabsAction(id, action, data) {
       case 'tabs.switch':
         await browser.tabs.update(data.tabId, { active: true });
         sendResponse(id, action, { success: true });
+        break;
+
+      case 'tabs.release':
+        sendResponse(id, action, { released: releaseAgentTab(data.tabId) });
         break;
 
       case 'tabs.group': {
@@ -777,33 +880,95 @@ async function getCurrentTabUrl(tabId) {
   }
 }
 
-// Shows the agent overlay for actions that happen here rather than in the page:
-// opening a tab, navigating, running a script. A page that is still loading has
-// no content script yet, so the overlay is shown again when its load completes,
-// as long as the agent acted on the tab within AGENT_ACTIVE_MS.
-const AGENT_ACTIVE_MS = 30000;
-const agentTabActivity = new Map();
+// Tabs an agent is working in. The page shows the overlay, the cursor and a
+// marker in the tab strip from the agent's first action until the agent says it
+// is done (tabs_release), the server that sent the work disconnects, or
+// AGENT_IDLE_RELEASE_MS pass with no action in the tab.
+//
+// Each entry holds what the page shows: a state the cursor animates (reading,
+// clicking, typing, waiting, working, thinking) and a first-person label, the
+// agent's own status line when it gave one.
+const AGENT_IDLE_RELEASE_MS = 5 * 60 * 1000;
+const agentTabs = new Map(); // tab id -> { socket, state, label, at }
 
-function markAgentActive(tabId) {
-  if (tabId == null) return;
-  agentTabActivity.set(tabId, Date.now());
-  browser.tabs.sendMessage(tabId, { action: 'agentActive' })
+// What each action looks like on the page when the agent gives no status line
+const AGENT_ACTIVITY = {
+  'content.get_text': ['reading', 'Reading this page'],
+  'content.get_html': ['reading', 'Reading this page'],
+  'content.snapshot': ['reading', 'Looking over this page'],
+  'content.click': ['clicking', 'Clicking'],
+  'content.type': ['typing', 'Typing'],
+  'content.press_key': ['typing', 'Pressing a key'],
+  'content.execute_script': ['working', 'Working on this page'],
+  'content.capture_file_input': ['clicking', 'Opening the file picker'],
+  'content.upload_begin': ['waiting', 'Uploading a file'],
+  'content.upload_chunk': ['waiting', 'Uploading a file'],
+  'content.upload_finish': ['waiting', 'Uploading a file'],
+  'navigation.go_to_url': ['waiting', 'Opening a page'],
+  'navigation.back': ['waiting', 'Going back'],
+  'navigation.forward': ['waiting', 'Going forward'],
+  'navigation.reload': ['waiting', 'Reloading the page'],
+  'tabs.create': ['waiting', 'Opening a new tab'],
+  'tabs.switch': ['working', 'Switching to this tab'],
+};
+const THINKING_LABEL = 'Thinking about the next step';
+
+function sendAgentState(tabId) {
+  const entry = agentTabs.get(tabId);
+  if (!entry) return;
+  browser.tabs.sendMessage(tabId, { action: 'agentActive', data: { state: entry.state, label: entry.label } })
     .catch(() => { /* no content script yet; the load listener below covers it */ });
 }
 
-browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.status !== 'complete') return;
-  const lastActive = agentTabActivity.get(tabId);
-  if (lastActive == null) return;
-  if (Date.now() - lastActive > AGENT_ACTIVE_MS) {
-    agentTabActivity.delete(tabId);
-    return;
+// Called before an action runs (state = what it does) and after it finishes
+// (state = thinking). A label given by the agent stays across both, since one
+// step of its work usually takes several calls.
+async function markAgentActive(tabId, { state = 'working', label = null, agentStatus = null, socket = null } = {}) {
+  if (tabId == null) return;
+  const previous = agentTabs.get(tabId);
+  agentTabs.set(tabId, {
+    socket: socket || (previous && previous.socket) || null,
+    state,
+    label: agentStatus || label || (previous && previous.agentStatus) || THINKING_LABEL,
+    agentStatus: agentStatus || (state === 'thinking' && previous ? previous.agentStatus : null),
+    at: Date.now()
+  });
+  sendAgentState(tabId);
+  // "Follow the agent" brings forward whichever tab the agent acts in next
+  if (state !== 'thinking') {
+    const { followAgent } = await browser.storage.local.get({ followAgent: false });
+    if (followAgent) browser.tabs.update(tabId, { active: true }).catch(() => {});
   }
-  browser.tabs.sendMessage(tabId, { action: 'agentActive' })
-    .catch(error => console.warn('Agent overlay not shown after load:', error.message));
+}
+
+function releaseAgentTab(tabId) {
+  if (!agentTabs.delete(tabId)) return false;
+  browser.tabs.sendMessage(tabId, { action: 'agentRelease' }).catch(() => {});
+  return true;
+}
+
+function releaseAgentTabsOf(socket) {
+  for (const [tabId, entry] of agentTabs) {
+    if (entry.socket === socket) releaseAgentTab(tabId);
+  }
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [tabId, entry] of agentTabs) {
+    if (now - entry.at > AGENT_IDLE_RELEASE_MS) releaseAgentTab(tabId);
+  }
+}, 30000);
+
+browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status !== 'complete' || !agentTabs.has(tabId)) return;
+  const entry = agentTabs.get(tabId);
+  // A page that finished loading is no longer something to wait for
+  if (entry.state === 'waiting') markAgentActive(tabId, { state: 'thinking' });
+  else sendAgentState(tabId);
 });
 
-browser.tabs.onRemoved.addListener(tabId => agentTabActivity.delete(tabId));
+browser.tabs.onRemoved.addListener(tabId => agentTabs.delete(tabId));
 
 // Helper function to send message with retry logic for content script
 async function sendMessageWithRetry(tabId, message, maxRetries = 5, delayMs = 2000) {
@@ -866,7 +1031,6 @@ async function handleContentAction(id, action, data) {
         break;
 
       case 'content.execute_script':
-        markAgentActive(data.tabId);
         try {
           const executeResults = await browser.tabs.executeScript(data.tabId, {
             code: data.script
@@ -953,25 +1117,21 @@ async function handleNavigationAction(id, action, data) {
   try {
     switch (action) {
       case 'navigation.go_to_url':
-        markAgentActive(data.tabId);
         await browser.tabs.update(data.tabId, { url: data.url });
         sendResponse(id, action, { success: true });
         break;
 
       case 'navigation.back':
-        markAgentActive(data.tabId);
         await browser.tabs.goBack(data.tabId);
         sendResponse(id, action, { success: true });
         break;
 
       case 'navigation.forward':
-        markAgentActive(data.tabId);
         await browser.tabs.goForward(data.tabId);
         sendResponse(id, action, { success: true });
         break;
 
       case 'navigation.reload':
-        markAgentActive(data.tabId);
         await browser.tabs.reload(data.tabId, { bypassCache: data.bypassCache || false });
         sendResponse(id, action, { success: true });
         break;
