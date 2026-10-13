@@ -536,6 +536,7 @@ async function handleTabsAction(id, action, data) {
         }
         
         const newTab = await browser.tabs.create(createTabOptions);
+        markAgentActive(newTab.id);
         sendResponse(id, action, { tab: newTab });
         break;
 
@@ -737,6 +738,34 @@ async function getCurrentTabUrl(tabId) {
   }
 }
 
+// Shows the agent overlay for actions that happen here rather than in the page:
+// opening a tab, navigating, running a script. A page that is still loading has
+// no content script yet, so the overlay is shown again when its load completes,
+// as long as the agent acted on the tab within AGENT_ACTIVE_MS.
+const AGENT_ACTIVE_MS = 30000;
+const agentTabActivity = new Map();
+
+function markAgentActive(tabId) {
+  if (tabId == null) return;
+  agentTabActivity.set(tabId, Date.now());
+  browser.tabs.sendMessage(tabId, { action: 'agentActive' })
+    .catch(() => { /* no content script yet; the load listener below covers it */ });
+}
+
+browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status !== 'complete') return;
+  const lastActive = agentTabActivity.get(tabId);
+  if (lastActive == null) return;
+  if (Date.now() - lastActive > AGENT_ACTIVE_MS) {
+    agentTabActivity.delete(tabId);
+    return;
+  }
+  browser.tabs.sendMessage(tabId, { action: 'agentActive' })
+    .catch(error => console.warn('Agent overlay not shown after load:', error.message));
+});
+
+browser.tabs.onRemoved.addListener(tabId => agentTabActivity.delete(tabId));
+
 // Helper function to send message with retry logic for content script
 async function sendMessageWithRetry(tabId, message, maxRetries = 5, delayMs = 2000) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -798,6 +827,7 @@ async function handleContentAction(id, action, data) {
         break;
 
       case 'content.execute_script':
+        markAgentActive(data.tabId);
         try {
           const executeResults = await browser.tabs.executeScript(data.tabId, {
             code: data.script
@@ -884,21 +914,25 @@ async function handleNavigationAction(id, action, data) {
   try {
     switch (action) {
       case 'navigation.go_to_url':
+        markAgentActive(data.tabId);
         await browser.tabs.update(data.tabId, { url: data.url });
         sendResponse(id, action, { success: true });
         break;
 
       case 'navigation.back':
+        markAgentActive(data.tabId);
         await browser.tabs.goBack(data.tabId);
         sendResponse(id, action, { success: true });
         break;
 
       case 'navigation.forward':
+        markAgentActive(data.tabId);
         await browser.tabs.goForward(data.tabId);
         sendResponse(id, action, { success: true });
         break;
 
       case 'navigation.reload':
+        markAgentActive(data.tabId);
         await browser.tabs.reload(data.tabId, { bypassCache: data.bypassCache || false });
         sendResponse(id, action, { success: true });
         break;
