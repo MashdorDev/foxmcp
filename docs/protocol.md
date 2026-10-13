@@ -594,7 +594,9 @@ snapshot or a CSS `selector`. A click dispatches the pointer and mouse sequence 
 the element's centre; `doubleClick: true` repeats it with the click count in
 `detail` and ends with `dblclick`. Typing goes through `insertText`, so inputs
 whose value a framework tracks see the change, and `submit: true` presses Enter
-afterwards. A stale ref is an error naming the ref.
+afterwards. The text goes in a few characters at a time over at most one second,
+with a ring around the field and the overlay label naming it, so a person
+watching sees the typing; the reply comes once all of it is in. A stale ref is an error naming the ref.
 
 ```json
 {"action": "content.click", "data": {"tabId": 123, "ref": "r3", "selector": null, "doubleClick": false}}

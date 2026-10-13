@@ -105,7 +105,25 @@ function clickElement(el, clicks = 1) {
 // insertText goes through the editor's own input path, so frameworks that track
 // value through input events (React, Vue) see the change. Setting .value directly
 // is the fallback for inputs where the command is refused.
-function typeInto(el, text, clear) {
+//
+// The text goes in a few characters at a time, spread over at most
+// TYPE_ANIMATION_MS, so a person watching sees it being written. Pages get one
+// input event per piece, as they would from a keyboard.
+const TYPE_ANIMATION_MS = 1000;
+const TYPE_STEP_MS = 25;
+
+// Focusing an editable element does not put the caret inside it, and
+// insertText with no caret in the element is refused.
+function caretToEnd(el) {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(false);
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+async function typeInto(el, text, clear) {
   el.scrollIntoView({ block: 'center' });
   el.focus();
   if (clear) {
@@ -114,8 +132,34 @@ function typeInto(el, text, clear) {
     } else if (typeof el.select === 'function') {
       el.select();
     }
+  } else if (el.isContentEditable) {
+    caretToEnd(el);
   }
-  if (document.execCommand('insertText', false, text)) {
+  const size = Math.max(1, Math.ceil(text.length * TYPE_STEP_MS / TYPE_ANIMATION_MS));
+  const pieces = [];
+  for (let i = 0; i < text.length; i += size) pieces.push(text.slice(i, i + size));
+  if (pieces.length === 0) pieces.push('');
+  for (let i = 0; i < pieces.length; i++) {
+    if (i > 0) {
+      await new Promise(resolve => setTimeout(resolve, TYPE_STEP_MS));
+      // An autocomplete popup can take focus between pieces; the rest of the
+      // text still belongs in this field.
+      if (document.activeElement !== el && !el.contains(document.activeElement)) {
+        el.focus();
+        if (el.isContentEditable) caretToEnd(el);
+      }
+    }
+    if (!document.execCommand('insertText', false, pieces[i])) {
+      if (i > 0) throw new Error('The field stopped accepting text partway through typing');
+      break;
+    }
+    showTypingField(el);
+    if (i === pieces.length - 1) return;
+  }
+  if (el.isContentEditable) {
+    el.textContent = clear ? text : el.textContent + text;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    showTypingField(el);
     return;
   }
   const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -123,6 +167,7 @@ function typeInto(el, text, clear) {
   setter.call(el, clear ? text : el.value + text);
   el.dispatchEvent(new Event('input', { bubbles: true }));
   el.dispatchEvent(new Event('change', { bubbles: true }));
+  showTypingField(el);
 }
 
 function pressKey(el, key) {
@@ -210,7 +255,11 @@ function setInputFiles(el, files, relativePaths) {
 const OVERLAY_ID = 'foxmcp-agent-overlay';
 const OVERLAY_IDLE_MS = 6000;
 const CURSOR_MOVE_MS = 350;
+const OVERLAY_LABEL = 'AI agent is working in this tab';
+// How long the ring stays on a field after the last piece of text goes in.
+const FIELD_LINGER_MS = 800;
 let overlayTimer = null;
+let fieldTimer = null;
 let cursorPos = null;
 
 function overlayRoot() {
@@ -232,9 +281,13 @@ function overlayRoot() {
         .ripple { position:fixed; width:28px; height:28px; margin:-14px 0 0 -14px; border-radius:50%;
           border:2px solid rgb(217,119,87); animation:ripple .45s ease-out forwards; }
         @keyframes ripple { from { transform:scale(.3); opacity:1; } to { transform:scale(1.4); opacity:0; } }
+        .field { position:fixed; display:none; border-radius:6px; box-shadow:0 0 0 2px rgb(217,119,87), 0 0 14px 2px rgba(217,119,87,.55);
+          animation:field-pulse 1.2s ease-in-out infinite; }
+        @keyframes field-pulse { 50% { box-shadow:0 0 0 2px rgb(217,119,87), 0 0 4px 1px rgba(217,119,87,.3); } }
       </style>
       <div class="glow"></div>
-      <div class="label"><span class="dot"></span>AI agent is working in this tab</div>
+      <div class="field"></div>
+      <div class="label"><span class="dot"></span><span class="text">${OVERLAY_LABEL}</span></div>
       <svg class="cursor" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">
         <path d="M2 1.5 L2 18 L6.6 13.9 L9.6 20.5 L12.5 19.2 L9.6 12.7 L15.8 12.7 Z" fill="rgb(217,119,87)" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/>
       </svg>`;
@@ -249,6 +302,26 @@ function showOverlay() {
   host.style.visibility = 'visible';
   clearTimeout(overlayTimer);
   overlayTimer = setTimeout(() => { host.style.opacity = '0'; }, OVERLAY_IDLE_MS);
+}
+
+// Ring the field being typed into and name it in the label. Called after each
+// piece of text, so the ring follows a field that grows or moves as it fills.
+function showTypingField(el) {
+  const root = overlayRoot().shadowRoot;
+  const rect = el.getBoundingClientRect();
+  const field = root.querySelector('.field');
+  Object.assign(field.style, {
+    display: 'block', left: rect.left + 'px', top: rect.top + 'px',
+    width: rect.width + 'px', height: rect.height + 'px',
+  });
+  const name = (el.getAttribute('aria-label') || el.placeholder || el.labels?.[0]?.innerText ||
+    el.name || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+  root.querySelector('.label .text').textContent = name ? `Typing into "${name}"` : 'Typing';
+  clearTimeout(fieldTimer);
+  fieldTimer = setTimeout(() => {
+    field.style.display = 'none';
+    root.querySelector('.label .text').textContent = OVERLAY_LABEL;
+  }, FIELD_LINGER_MS);
 }
 
 async function moveCursorTo(el, press) {
@@ -321,8 +394,8 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         const el = findTarget(data);
         showOverlay();
         moveCursorTo(el, true)
+          .then(() => typeInto(el, data.text, data.clear !== false))
           .then(() => {
-            typeInto(el, data.text, data.clear !== false);
             if (data.submit) pressKey(el, 'Enter');
             sendResponse({ typed: describe(el) });
           })
