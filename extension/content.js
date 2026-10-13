@@ -459,3 +459,8 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   return true; // Keep message channel open for async response
 });
+// A page the agent opened or navigated to shows the overlay as soon as this
+// script runs, instead of waiting for the tab's load to complete.
+browser.runtime.sendMessage({ action: 'isAgentTab' })
+  .then(reply => { if (reply && reply.active) showOverlay(); })
+  .catch(error => console.warn('Could not ask whether an agent is working in this tab:', error.message));

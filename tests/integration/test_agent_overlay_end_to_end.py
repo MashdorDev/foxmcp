@@ -25,8 +25,8 @@ OVERLAY_STATE = (
     " return host ? 'overlay:' + host.style.opacity : 'no overlay' })()"
 )
 
-# Long enough for example.org to load and the content script to start
-LOAD_SECONDS = 3.0
+# example.org can take several seconds to load, so tests wait for the page rather than a fixed time
+LOAD_TIMEOUT = 20.0
 
 
 async def call(client, name, args=None):
@@ -38,6 +38,21 @@ async def call(client, name, args=None):
 
 async def overlay_state(client, tab_id):
     return await call(client, "content_execute_script", {"tab_id": tab_id, "code": OVERLAY_STATE})
+
+
+async def wait_for_page(client, tab_id, path):
+    """Wait until the tab shows path and has finished loading"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + LOAD_TIMEOUT
+    state = ""
+    while loop.time() < deadline:
+        result = await client.call_tool("content_execute_script", {
+            "tab_id": tab_id, "code": "location.pathname + ' ' + document.readyState"})
+        state = result.get("content", "")
+        if path in state and "complete" in state:
+            return
+        await asyncio.sleep(0.5)
+    raise AssertionError(f"{path} did not load within {LOAD_TIMEOUT}s, last state: {state}")
 
 
 class TestOverlayFromTheFirstAction:
@@ -53,7 +68,7 @@ class TestOverlayFromTheFirstAction:
             assert match, f"Could not read the new tab's ID from: {created}"
             tab_id = int(match.group(1))
 
-            await asyncio.sleep(LOAD_SECONDS)
+            await wait_for_page(client, tab_id, "/overlay-new-tab")
             assert "overlay:1" in await overlay_state(client, tab_id), \
                 "Opening a tab should show the overlay once the page loads"
         finally:
@@ -69,10 +84,10 @@ class TestOverlayFromTheFirstAction:
         try:
             created = await call(client, "tabs_create", {"url": "https://example.org/overlay-start", "active": True})
             tab_id = int(re.search(r'ID (\d+)', created).group(1))
-            await asyncio.sleep(LOAD_SECONDS)
+            await wait_for_page(client, tab_id, "/overlay-start")
 
             await call(client, "navigation_go_to_url", {"tab_id": tab_id, "url": "https://example.org/overlay-next"})
-            await asyncio.sleep(LOAD_SECONDS)
+            await wait_for_page(client, tab_id, "/overlay-next")
 
             state = await call(client, "content_execute_script", {
                 "tab_id": tab_id,

@@ -410,6 +410,14 @@ function sendDebugLog(message, level = 'log') {
 // Handle popup requests for connection status
 browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
+  // A page's content script asks as soon as it starts, which is seconds earlier
+  // than the tab's load completing (that waits for the favicon and the rest)
+  if (request.action === 'isAgentTab') {
+    const lastActive = sender.tab && agentTabActivity.get(sender.tab.id);
+    sendResponse({ active: lastActive != null && Date.now() - lastActive <= AGENT_ACTIVE_MS });
+    return true;
+  }
+
   if (request.action === 'getConnectionStatus') {
     sendResponse({
       connected: isConnected,
