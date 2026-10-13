@@ -57,6 +57,8 @@ logger = logging.getLogger(__name__)
 #
 # The trailing .+ is required: websockets matches this with fullmatch(), so a
 # bare prefix pattern would reject every origin including the extension's.
+# Largest message accepted from the extension.
+MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 EXTENSION_ORIGIN_PATTERN = re.compile(r'moz-extension://.+')
 
 def find_available_port(start_port=3000, max_attempts=100):
@@ -898,6 +900,9 @@ class FoxMCPServer:
                 self.host,
                 self.port,
                 reuse_address=True,  # Enable SO_REUSEADDR for immediate port reuse
+                # A full-window screenshot comes back as one base64 message of
+                # several MB; the library's 1 MiB default drops the connection.
+                max_size=MAX_MESSAGE_BYTES,
                 # Rejected during the handshake, so a non-extension client never
                 # reaches handle_extension_connection - which would otherwise close
                 # the real extension's socket to make room for it.
