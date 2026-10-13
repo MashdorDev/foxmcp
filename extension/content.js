@@ -278,7 +278,7 @@ async function moveCursorTo(el, press) {
 
 // Listen for messages from background script
 browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  const { action, script, data } = request;
+  const { action, data } = request;
 
   console.log('📨 Content script received message:', action, data);
 
@@ -298,15 +298,6 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       case 'getPageURL':
         sendResponse({ url: window.location.href });
-        break;
-
-      case 'executeScript':
-        try {
-          const result = eval(script);
-          sendResponse({ result });
-        } catch (error) {
-          sendResponse({ error: error.message });
-        }
         break;
 
       case 'snapshot':

@@ -1,15 +1,19 @@
 {
   "manifest_version": 2,
   "name": "MCP Bridge for Firefox",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "Let Claude, Cursor or any MCP client use your Firefox: read pages, click, type, upload files and take screenshots, with no automation mode.",
   "author": "Dor Zairi (based on FoxMCP by ThinkerYzu)",
   "homepage_url": "https://github.com/MashdorDev/mcp-bridge-for-firefox",
   "license": "MIT",
+  "icons": {
+    "48": "icons/icon-48.png",
+    "96": "icons/icon-96.png",
+    "128": "icons/icon-128.png"
+  },
   "permissions": [
     "tabs",
     "tabGroups",
-    "windows",
     "history",
     "bookmarks",
     "activeTab",
@@ -30,7 +34,11 @@
   ],
   "browser_action": {
     "default_popup": "popup/popup.html",
-    "default_title": "MCP Bridge for Firefox"
+    "default_title": "MCP Bridge for Firefox",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
   },
   "options_ui": {
     "page": "options.html",
@@ -38,7 +46,16 @@
   },
   "browser_specific_settings": {
     "gecko": {
-      "id": "foxmcp@dorzairi.dev"
+      "id": "foxmcp@dorzairi.dev",
+      "data_collection_permissions": {
+        "required": [
+          "websiteContent",
+          "browsingActivity",
+          "websiteActivity",
+          "bookmarksInfo",
+          "authenticationInfo"
+        ]
+      }
     }
   }
 }
