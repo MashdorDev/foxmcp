@@ -287,10 +287,11 @@ function overlayRoot() {
       </style>
       <div class="glow"></div>
       <div class="field"></div>
-      <div class="label"><span class="dot"></span><span class="text">${OVERLAY_LABEL}</span></div>
+      <div class="label"><span class="dot"></span><span class="text"></span></div>
       <svg class="cursor" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">
         <path d="M2 1.5 L2 18 L6.6 13.9 L9.6 20.5 L12.5 19.2 L9.6 12.7 L15.8 12.7 Z" fill="rgb(217,119,87)" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/>
       </svg>`;
+    root.querySelector('.label .text').textContent = OVERLAY_LABEL;
     document.documentElement.appendChild(host);
   }
   return host;
