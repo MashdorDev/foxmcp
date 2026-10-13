@@ -9,7 +9,7 @@ import websockets
 import time
 import re
 from unittest.mock import Mock, patch, AsyncMock
-from server.server import FoxMCPServer, EXTENSION_ORIGIN_PATTERN
+from server.server import FoxMCPServer, EXTENSION_ORIGIN_PATTERN, MAX_MESSAGE_BYTES
 
 class TestWebSocketCommunication:
 
@@ -55,6 +55,7 @@ class TestWebSocketCommunication:
                 "localhost",
                 8767,
                 reuse_address=True,
+                max_size=MAX_MESSAGE_BYTES,
                 origins=[EXTENSION_ORIGIN_PATTERN],
                 process_response=server.log_rejected_handshake
             )
