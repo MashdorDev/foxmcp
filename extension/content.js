@@ -146,15 +146,22 @@ async function typeInto(el, text, clear) {
       // text still belongs in this field.
       if (document.activeElement !== el && !el.contains(document.activeElement)) {
         el.focus();
-        if (el.isContentEditable) caretToEnd(el);
       }
+      // Rich editors (ProseMirror in ChatGPT) can leave the piece just inserted
+      // selected, and the next piece would then replace it, so only the last
+      // few dozen characters of a long text arrived.
+      if (el.isContentEditable) caretToEnd(el);
+      else el.setSelectionRange?.(el.value.length, el.value.length);
     }
     if (!document.execCommand('insertText', false, pieces[i])) {
       if (i > 0) throw new Error('The field stopped accepting text partway through typing');
       break;
     }
     showTypingField(el);
-    if (i === pieces.length - 1) return;
+    if (i === pieces.length - 1) {
+      checkTyped(el, text);
+      return;
+    }
   }
   if (el.isContentEditable) {
     el.textContent = clear ? text : el.textContent + text;
@@ -168,6 +175,18 @@ async function typeInto(el, text, clear) {
   el.dispatchEvent(new Event('input', { bubbles: true }));
   el.dispatchEvent(new Event('change', { bubbles: true }));
   showTypingField(el);
+}
+
+// Whether the text that was typed is all there. An editor that drops or replaces
+// part of it would otherwise report success with half a message in the field.
+function checkTyped(el, text) {
+  const normalise = value => value.replace(/\s+/g, ' ').trim();
+  const now = normalise(el.isContentEditable ? el.innerText : el.value || '');
+  const wanted = normalise(text);
+  if (!now.includes(wanted)) {
+    throw new Error(`Only part of the text arrived in the field (it now holds ${now.length} characters, ` +
+      `the text was ${wanted.length})`);
+  }
 }
 
 function pressKey(el, key) {
@@ -220,16 +239,23 @@ function captureNextFileInput(timeoutMs) {
 
 // webkitRelativePath is what tells a page the files came from a folder (and
 // which subfolder each sits in), so it is set where the page reads it.
-function setInputFiles(el, files, relativePaths) {
+async function setInputFiles(el, files, relativePaths) {
   if (el.tagName !== 'INPUT' || el.type !== 'file') {
     throw new Error('Target must be an <input type=file>');
   }
   // Files built in the extension belong to it, and the page gets "Permission
-  // denied" reading them. Cloned into the page and set through the page's own
-  // DataTransfer, they are ordinary files as far as the page can tell.
-  const transfer = new window.wrappedJSObject.DataTransfer();
+  // denied" reading them. Each one is rebuilt in the page from its bytes and set
+  // through the page's own DataTransfer, so it is an ordinary file as far as the
+  // page can tell. A clone of the extension's File was not enough: Miro accepted
+  // it, showed "Uploading..." and never finished, apparently because its
+  // uploader passes the file on to a worker.
+  const page = window.wrappedJSObject;
+  const transfer = new page.DataTransfer();
   for (const file of files) {
-    transfer.items.add(cloneInto(file, window));
+    const bytes = cloneInto(await file.arrayBuffer(), window);
+    const pageFile = new page.File(cloneInto([bytes], window), file.name,
+      cloneInto({ type: file.type, lastModified: file.lastModified }, window));
+    transfer.items.add(pageFile);
   }
   el.wrappedJSObject.files = transfer.files;
   const pageFiles = el.wrappedJSObject.files;
@@ -248,61 +274,130 @@ function setInputFiles(el, files, relativePaths) {
     (_, i) => pageFiles[i].webkitRelativePath || pageFiles[i].name);
 }
 
-// Overlay shown while an agent acts on the tab: a glowing border, a label and a
-// cursor that moves to each element before it is clicked or typed into. It is
-// purely visual (pointer-events: none) and fades once the agent goes quiet, so
-// the tab looks normal again when the person takes over.
+// Overlay shown while an agent works in the tab: a glowing border, a label in
+// the first person saying what it is doing, a cursor that is always on screen
+// and animates the current state, and a pulsing ring on the tab's icon in the tab
+// strip. It is purely visual (pointer-events: none) and stays until the agent
+// releases the tab; the background script releases it when the agent's server
+// goes, or after five minutes with no action.
 const OVERLAY_ID = 'foxmcp-agent-overlay';
-const OVERLAY_IDLE_MS = 6000;
 const CURSOR_MOVE_MS = 350;
 const OVERLAY_LABEL = 'AI agent is working in this tab';
 // How long the ring stays on a field after the last piece of text goes in.
 const FIELD_LINGER_MS = 800;
-let overlayTimer = null;
+// After this long in "thinking" the cursor settles to idle.
+const IDLE_AFTER_MS = 20000;
+const CURSOR_STATES = ['idle', 'thinking', 'reading', 'clicking', 'typing', 'waiting', 'working'];
 let fieldTimer = null;
+let idleTimer = null;
 let cursorPos = null;
+let agentLabel = OVERLAY_LABEL;
 
 function overlayRoot() {
   let host = document.getElementById(OVERLAY_ID);
   if (!host) {
     host = document.createElement('div');
     host.id = OVERLAY_ID;
-    host.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647;';
+    host.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647;opacity:0;';
     const root = host.attachShadow({ mode: 'open' });
     root.innerHTML = `
       <style>
         :host { transition: opacity .4s; }
-        .glow { position:fixed; inset:0; box-shadow: inset 0 0 0 2px rgba(217,119,87,.9), inset 0 0 22px rgba(217,119,87,.5); }
+        .glow { position:fixed; inset:0; box-shadow: inset 0 0 0 2px rgba(217,119,87,.9), inset 0 0 22px rgba(217,119,87,.5);
+          animation: glow 3s ease-in-out infinite; }
+        @keyframes glow { 50% { box-shadow: inset 0 0 0 2px rgba(217,119,87,.6), inset 0 0 14px rgba(217,119,87,.3); } }
         .label { position:fixed; left:50%; bottom:14px; transform:translateX(-50%); display:flex; align-items:center; gap:8px;
-          padding:7px 14px; border-radius:999px; background:rgba(28,25,23,.92); color:#fff;
-          font:500 13px/1 system-ui, sans-serif; box-shadow:0 2px 10px rgba(0,0,0,.3); white-space:nowrap; }
-        .dot { width:8px; height:8px; border-radius:50%; background:rgb(217,119,87); }
-        .cursor { position:fixed; left:0; top:0; width:22px; height:22px; opacity:0; filter:drop-shadow(0 1px 2px rgba(0,0,0,.45)); }
+          padding:7px 14px; border-radius:999px; background:rgba(28,25,23,.92); color:#fff; max-width:80vw;
+          font:500 13px/1.2 system-ui, sans-serif; box-shadow:0 2px 10px rgba(0,0,0,.3); white-space:nowrap; }
+        .label .text { overflow:hidden; text-overflow:ellipsis; }
+        .dot { flex:none; width:8px; height:8px; border-radius:50%; background:rgb(217,119,87); animation: dot 1.6s ease-in-out infinite; }
+        @keyframes dot { 50% { opacity:.35; } }
+        .pointer { position:fixed; left:0; top:0; width:22px; height:22px; }
+        .cursor { width:22px; height:22px; filter:drop-shadow(0 1px 2px rgba(0,0,0,.45)); }
+        .badge { position:absolute; left:18px; top:16px; display:none; }
+        .pointer.idle .cursor { animation: breathe 2.4s ease-in-out infinite; }
+        @keyframes breathe { 50% { opacity:.55; } }
+        .pointer.thinking .badge.think { display:flex; gap:3px; padding:3px 5px; border-radius:8px; background:rgba(28,25,23,.85); }
+        .think i { width:5px; height:5px; border-radius:50%; background:#fff; animation: think 1s ease-in-out infinite; }
+        .think i:nth-child(2) { animation-delay:.15s } .think i:nth-child(3) { animation-delay:.3s }
+        @keyframes think { 0%,100% { transform:translateY(0); opacity:.4 } 50% { transform:translateY(-3px); opacity:1 } }
+        .pointer.reading .badge.read { display:block; width:26px; height:3px; border-radius:2px; background:rgba(217,119,87,.35); overflow:hidden; }
+        .read b { display:block; width:9px; height:3px; background:rgb(217,119,87); animation: read .9s linear infinite; }
+        @keyframes read { from { transform:translateX(-9px) } to { transform:translateX(26px) } }
+        .pointer.waiting .badge.wait { display:block; width:14px; height:14px; border-radius:50%;
+          border:2px solid rgba(217,119,87,.3); border-top-color:rgb(217,119,87); animation: spin .8s linear infinite; }
+        @keyframes spin { to { transform:rotate(360deg) } }
+        .pointer.typing .badge.type { display:block; width:2px; height:14px; background:rgb(217,119,87); animation: blink .8s steps(1) infinite; }
+        @keyframes blink { 50% { opacity:0 } }
+        .pointer.working .badge.work { display:block; width:10px; height:10px; border-radius:50%; background:rgb(217,119,87); animation: dot 1s ease-in-out infinite; }
         .ripple { position:fixed; width:28px; height:28px; margin:-14px 0 0 -14px; border-radius:50%;
           border:2px solid rgb(217,119,87); animation:ripple .45s ease-out forwards; }
         @keyframes ripple { from { transform:scale(.3); opacity:1; } to { transform:scale(1.4); opacity:0; } }
         .field { position:fixed; display:none; border-radius:6px; box-shadow:0 0 0 2px rgb(217,119,87), 0 0 14px 2px rgba(217,119,87,.55);
           animation:field-pulse 1.2s ease-in-out infinite; }
         @keyframes field-pulse { 50% { box-shadow:0 0 0 2px rgb(217,119,87), 0 0 4px 1px rgba(217,119,87,.3); } }
+        @media (prefers-reduced-motion: reduce) { * { animation:none !important; } }
       </style>
       <div class="glow"></div>
       <div class="field"></div>
       <div class="label"><span class="dot"></span><span class="text"></span></div>
-      <svg class="cursor" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">
-        <path d="M2 1.5 L2 18 L6.6 13.9 L9.6 20.5 L12.5 19.2 L9.6 12.7 L15.8 12.7 Z" fill="rgb(217,119,87)" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/>
-      </svg>`;
-    root.querySelector('.label .text').textContent = OVERLAY_LABEL;
+      <div class="pointer idle">
+        <svg class="cursor" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">
+          <path d="M2 1.5 L2 18 L6.6 13.9 L9.6 20.5 L12.5 19.2 L9.6 12.7 L15.8 12.7 Z" fill="rgb(217,119,87)" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/>
+        </svg>
+        <span class="badge think"><i></i><i></i><i></i></span>
+        <span class="badge read"><b></b></span>
+        <span class="badge wait"></span>
+        <span class="badge type"></span>
+        <span class="badge work"></span>
+      </div>`;
+    root.querySelector('.label .text').textContent = agentLabel;
     document.documentElement.appendChild(host);
   }
   return host;
 }
 
-function showOverlay() {
+// The cursor stays where the agent last acted; before any click or typing it
+// rests a little right of the middle of the page.
+function placeCursor(root) {
+  if (!cursorPos) cursorPos = { x: Math.round(innerWidth * 0.62), y: Math.round(innerHeight * 0.42) };
+  root.querySelector('.pointer').style.transform = `translate(${cursorPos.x}px, ${cursorPos.y}px)`;
+}
+
+function setCursorState(state) {
+  const pointer = overlayRoot().shadowRoot.querySelector('.pointer');
+  for (const name of CURSOR_STATES) pointer.classList.toggle(name, name === state);
+  clearTimeout(idleTimer);
+  if (state === 'thinking') idleTimer = setTimeout(() => setCursorState('idle'), IDLE_AFTER_MS);
+}
+
+function setLabel(text) {
+  agentLabel = text || OVERLAY_LABEL;
+  overlayRoot().shadowRoot.querySelector('.label .text').textContent = agentLabel;
+}
+
+// state: what the cursor shows; label: the line under it. Both are optional,
+// so a page action can show the overlay without changing what was said.
+function showOverlay(state, label) {
   const host = overlayRoot();
   host.style.opacity = '1';
   host.style.visibility = 'visible';
-  clearTimeout(overlayTimer);
-  overlayTimer = setTimeout(() => { host.style.opacity = '0'; }, OVERLAY_IDLE_MS);
+  placeCursor(host.shadowRoot);
+  if (state) setCursorState(state);
+  if (label) setLabel(label);
+  startTabMarker();
+}
+
+function hideOverlay() {
+  const host = document.getElementById(OVERLAY_ID);
+  if (host) {
+    host.style.opacity = '0';
+    host.shadowRoot.querySelector('.field').style.display = 'none';
+    host.shadowRoot.querySelector('.label .text').textContent = agentLabel;
+  }
+  clearTimeout(idleTimer);
+  clearTimeout(fieldTimer);
+  stopTabMarker();
 }
 
 // Ring the field being typed into and name it in the label. Called after each
@@ -321,8 +416,79 @@ function showTypingField(el) {
   clearTimeout(fieldTimer);
   fieldTimer = setTimeout(() => {
     field.style.display = 'none';
-    root.querySelector('.label .text').textContent = OVERLAY_LABEL;
+    root.querySelector('.label .text').textContent = agentLabel;
   }, FIELD_LINGER_MS);
+}
+
+// The tab's icon in the tab strip gets a pulsing ring while the agent works
+// here, so the tab stands out in a row of tabs. Drawn on a canvas from the
+// page's own icon (fetched, so a cross-origin icon does not taint the canvas)
+// and swapped in as the page's icon a few times a second; the original icon
+// links go back on release.
+const MARKER_FRAME_MS = 140;
+const MARKER_FRAMES = 14;
+let markerTimer = null;
+let markerLinks = null;
+let markerFrame = 0;
+
+async function loadPageIcon() {
+  const link = document.querySelector('link[rel~="icon"]:not([data-foxmcp-marker])');
+  const url = link ? link.href : new URL('/favicon.ico', location.href).href;
+  try {
+    const response = await fetch(url, { credentials: 'omit' });
+    if (!response.ok) return null;
+    return await createImageBitmap(await response.blob());
+  } catch (error) {
+    return null; // no icon, or one createImageBitmap cannot decode (SVG): the ring is drawn alone
+  }
+}
+
+async function buildMarkerFrames() {
+  const icon = await loadPageIcon();
+  const frames = [];
+  for (let i = 0; i < MARKER_FRAMES; i++) {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    const pulse = (Math.sin(i / MARKER_FRAMES * Math.PI * 2) + 1) / 2;
+    if (icon) {
+      ctx.drawImage(icon, 14, 14, 36, 36);
+    } else {
+      ctx.fillStyle = 'rgb(217,119,87)';
+      ctx.beginPath(); ctx.arc(32, 32, 12, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.lineWidth = 6 + pulse * 3;
+    ctx.strokeStyle = `rgba(217,119,87,${0.55 + pulse * 0.45})`;
+    ctx.beginPath(); ctx.arc(32, 32, 27, 0, Math.PI * 2); ctx.stroke();
+    frames.push(canvas.toDataURL('image/png'));
+  }
+  return frames;
+}
+
+async function startTabMarker() {
+  if (markerTimer || !document.head) return;
+  markerTimer = -1; // frames being built
+  const frames = await buildMarkerFrames();
+  if (markerTimer !== -1) return; // released meanwhile
+  markerLinks = [...document.querySelectorAll('link[rel~="icon"]')];
+  for (const link of markerLinks) link.remove();
+  const marker = document.createElement('link');
+  marker.rel = 'icon';
+  marker.setAttribute('data-foxmcp-marker', '');
+  document.head.appendChild(marker);
+  markerTimer = setInterval(() => {
+    marker.href = frames[markerFrame++ % frames.length];
+  }, MARKER_FRAME_MS);
+}
+
+function stopTabMarker() {
+  if (markerTimer && markerTimer !== -1) clearInterval(markerTimer);
+  markerTimer = null;
+  document.querySelectorAll('link[data-foxmcp-marker]').forEach(link => link.remove());
+  if (markerLinks && document.head) {
+    for (const link of markerLinks) document.head.appendChild(link);
+  }
+  markerLinks = null;
 }
 
 async function moveCursorTo(el, press) {
@@ -332,13 +498,12 @@ async function moveCursorTo(el, press) {
   const from = cursorPos || to;
   cursorPos = to;
   const root = overlayRoot().shadowRoot;
-  const cursor = root.querySelector('.cursor');
-  cursor.style.transition = 'none';
-  cursor.style.opacity = '1';
-  cursor.style.transform = `translate(${from.x}px, ${from.y}px)`;
-  cursor.getBoundingClientRect();
-  cursor.style.transition = `transform ${CURSOR_MOVE_MS}ms cubic-bezier(.3,.7,.4,1)`;
-  cursor.style.transform = `translate(${to.x}px, ${to.y}px)`;
+  const pointer = root.querySelector('.pointer');
+  pointer.style.transition = 'none';
+  pointer.style.transform = `translate(${from.x}px, ${from.y}px)`;
+  pointer.getBoundingClientRect();
+  pointer.style.transition = `transform ${CURSOR_MOVE_MS}ms cubic-bezier(.3,.7,.4,1)`;
+  pointer.style.transform = `translate(${to.x}px, ${to.y}px)`;
   await new Promise(resolve => setTimeout(resolve, CURSOR_MOVE_MS));
   if (press) {
     const ripple = document.createElement('div');
@@ -359,19 +524,26 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
   try {
     switch (action) {
       case 'extractText':
-        showOverlay();
+        showOverlay('reading');
         sendResponse({ text: document.body.innerText });
         break;
 
       case 'extractHTML':
-        showOverlay();
+        showOverlay('reading');
         sendResponse({ html: document.documentElement.outerHTML });
         break;
 
-      // The agent opened, navigated or ran a script in this tab, actions that
-      // happen in the background script and don't otherwise reach the page.
+      // What the agent is doing in this tab, sent by the background script
+      // before and after each action, and when a page it opened finishes loading.
       case 'agentActive':
-        showOverlay();
+        showOverlay(data && data.state, data && data.label);
+        sendResponse({ ok: true });
+        break;
+
+      // The agent is done with this tab (tabs_release, its server went, or
+      // it has been idle for a while).
+      case 'agentRelease':
+        hideOverlay();
         sendResponse({ ok: true });
         break;
 
@@ -384,13 +556,19 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         break;
 
       case 'snapshot':
-        showOverlay();
+        showOverlay('reading');
         sendResponse({ snapshot: snapshot(data.maxElements || 300), url: location.href, title: document.title });
         break;
 
       case 'click': {
         const el = findTarget(data);
-        showOverlay();
+        showOverlay('clicking');
+        // A bare "Clicking" from the background gets the element's name
+        if (agentLabel === 'Clicking') {
+          const name = (el.getAttribute('aria-label') || el.innerText || el.value || el.title || '')
+            .replace(/\s+/g, ' ').trim().slice(0, 40);
+          if (name) setLabel(`Clicking "${name}"`);
+        }
         moveCursorTo(el, true)
           .then(() => {
             clickElement(el, data.doubleClick ? 2 : 1);
@@ -402,7 +580,7 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       case 'type': {
         const el = findTarget(data);
-        showOverlay();
+        showOverlay('typing');
         moveCursorTo(el, true)
           .then(() => typeInto(el, data.text, data.clear !== false))
           .then(() => {
@@ -415,7 +593,7 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       case 'pressKey': {
         const el = data.ref || data.selector ? findTarget(data) : (document.activeElement || document.body);
-        showOverlay();
+        showOverlay('typing');
         pressKey(el, data.key);
         sendResponse({ pressed: data.key });
         break;
@@ -423,7 +601,7 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       case 'captureFileInput': {
         const trigger = findTarget({ ref: data.triggerRef, selector: data.triggerSelector });
-        showOverlay();
+        showOverlay('clicking');
         const captured = captureNextFileInput(data.timeoutMs || 3000);
         moveCursorTo(trigger, true)
           .then(() => clickElement(trigger))
@@ -435,9 +613,10 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       case 'setFiles': {
         const el = findTarget(data);
-        showOverlay();
-        const paths = setInputFiles(el, data.files, data.relativePaths || []);
-        sendResponse({ count: paths.length, paths: paths.slice(0, 5), target: describe(el) });
+        showOverlay('waiting');
+        setInputFiles(el, data.files, data.relativePaths || [])
+          .then(paths => sendResponse({ count: paths.length, paths: paths.slice(0, 5), target: describe(el) }))
+          .catch(error => sendResponse({ error: error.message }));
         break;
       }
 
@@ -462,5 +641,5 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // A page the agent opened or navigated to shows the overlay as soon as this
 // script runs, instead of waiting for the tab's load to complete.
 browser.runtime.sendMessage({ action: 'isAgentTab' })
-  .then(reply => { if (reply && reply.active) showOverlay(); })
+  .then(reply => { if (reply && reply.active) showOverlay(reply.state, reply.label); })
   .catch(error => console.warn('Could not ask whether an agent is working in this tab:', error.message));

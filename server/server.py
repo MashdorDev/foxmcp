@@ -23,9 +23,9 @@ from typing import Dict, Any, Optional
 import websockets
 import uvicorn
 try:
-    from .mcp_tools import FoxMCPTools
+    from .mcp_tools import FoxMCPTools, AGENT_CALL
 except ImportError:
-    from mcp_tools import FoxMCPTools
+    from mcp_tools import FoxMCPTools, AGENT_CALL
 
 # Try to import port coordinator for dynamic port allocation
 try:
@@ -84,6 +84,33 @@ def find_available_port(start_port=3000, max_attempts=100):
                 continue
 
     raise RuntimeError(f"Could not find available port starting from {start_port}")
+
+# How many ports after the configured one a server may move to when that one is
+# taken. Each MCP client launches a server of its own under --stdio, so a second
+# Claude session would otherwise find no port and no browser. The extension
+# connects to every server on these ports, so each session gets its own.
+EXTRA_SERVER_PORTS = 4
+
+
+def port_is_free(port: int) -> bool:
+    """Whether no other process is listening on the port, on IPv4 or IPv6 localhost
+
+    On Windows the test socket asks for exclusive use: with SO_REUSEADDR, which
+    the WebSocket server used to set, Windows lets a second process bind a port
+    another one is listening on, and both servers start with no error.
+    """
+    for family, address in ((socket.AF_INET, '127.0.0.1'), (socket.AF_INET6, '::1')):
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as sock:
+                if hasattr(socket, 'SO_EXCLUSIVEADDRUSE'):
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                sock.bind((address, port))
+        except OSError as e:
+            if family == socket.AF_INET6 and getattr(e, 'errno', None) in (97, 10047, 99, 10049):
+                continue  # no IPv6 on this machine
+            return False
+    return True
+
 
 @dataclass
 class BrowserConnection:
@@ -179,6 +206,12 @@ class FoxMCPServer:
         # every client, and only the client that started one knows its id.
         self.monitor_owners = {}  # monitor_id -> MCP session id
         self.monitors_being_stopped = set()
+        # Which MCP client is working in which tab, so a client that goes can
+        # have its tabs released: the extension keeps the "AI agent is working"
+        # overlay up until then. Only matters in HTTP mode; under --stdio the
+        # process ends with its client and the extension releases the tabs when
+        # the connection drops.
+        self.agent_tabs = {}  # tab id -> MCP session id
         self.mcp_http_app = None
         self.monitor_reaper_task = None
         self._shutdown_event = None
@@ -469,6 +502,12 @@ class FoxMCPServer:
         if not self.extension_connection:
             return {"error": "No extension connection available"}
 
+        # The tool this request comes from, and the status line its caller gave,
+        # so the extension can show on the page what the agent is doing
+        agent_call = AGENT_CALL.get()
+        if agent_call and 'agent' not in request:
+            request = {**request, 'agent': agent_call}
+
         # Create future for response
         response_future = asyncio.Future()
         self.pending_requests[request_id] = response_future
@@ -536,6 +575,47 @@ class FoxMCPServer:
                 }
 
         return None
+
+    def note_agent_tab(self, session_id: Optional[str], tab_id: Any):
+        """Record that an MCP client is acting on a tab"""
+        try:
+            self.agent_tabs[int(tab_id)] = session_id or self.NO_MCP_SESSION
+        except (TypeError, ValueError):
+            pass
+
+    def forget_agent_tab(self, tab_id: Any):
+        """Drop a tab its client released itself"""
+        try:
+            self.agent_tabs.pop(int(tab_id), None)
+        except (TypeError, ValueError):
+            pass
+
+    async def release_tabs_of_gone_clients(self):
+        """Release the tabs of every MCP client that has disconnected
+
+        Without this a client that ends without calling tabs_release would
+        leave its overlay up until the extension's idle timeout.
+        """
+        if not self.agent_tabs:
+            return
+        live_sessions = self._live_mcp_session_ids()
+        if live_sessions is None:
+            return
+        gone = [tab_id for tab_id, session_id in self.agent_tabs.items()
+                if session_id != self.NO_MCP_SESSION and session_id not in live_sessions]
+        for tab_id in gone:
+            self.agent_tabs.pop(tab_id, None)
+            if not self.extension_connection:
+                continue
+            response = await self.send_request_and_wait({
+                "id": f"release_{tab_id}_{time.time()}",
+                "type": "request",
+                "action": "tabs.release",
+                "data": {"tabId": tab_id},
+                "timestamp": datetime.now().isoformat()
+            }, timeout=10.0)
+            if "error" in response or response.get("type") == "error":
+                logger.info(f"Could not release tab {tab_id} of a departed MCP client: {response}")
 
     async def stop_monitors_of_gone_clients(self):
         """Stop every running monitor whose MCP client has disconnected
@@ -637,6 +717,7 @@ class FoxMCPServer:
             await asyncio.sleep(self.MONITOR_REAP_INTERVAL)
             try:
                 await self.stop_monitors_of_gone_clients()
+                await self.release_tabs_of_gone_clients()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -1008,14 +1089,24 @@ class FoxMCPServer:
         elif not self.start_mcp:
             logger.info("MCP server disabled for this instance")
 
-        # Use modern websockets API with SO_REUSEADDR
-        import socket
+        # Another server already serving a browser keeps its port; this one takes
+        # the next free one, which the extension also connects to.
+        if not port_is_free(self.port):
+            for candidate in range(self.port + 1, self.port + 1 + EXTRA_SERVER_PORTS):
+                if port_is_free(candidate):
+                    logger.info(f"Port {self.port} is taken by another FoxMCP server; using {candidate}")
+                    self.port = candidate
+                    break
+
         try:
             self.websocket_server = await websockets.serve(
                 self.handle_extension_connection,
                 self.host,
                 self.port,
-                reuse_address=True,  # Enable SO_REUSEADDR for immediate port reuse
+                # SO_REUSEADDR lets a restarted server rebind at once on Linux and
+                # macOS. On Windows it means something else - a second process
+                # may bind a port that is in use - so it stays off there.
+                reuse_address=os.name != 'nt',
                 # A full-window screenshot comes back as one base64 message of
                 # several MB; the library's 1 MiB default drops the connection.
                 max_size=MAX_MESSAGE_BYTES,
