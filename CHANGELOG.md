@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **On Windows a second server no longer takes over port 8765 from the first.** `SO_REUSEADDR` lets two sockets bind the same port there; the free-port test now uses `SO_EXCLUSIVEADDRUSE`.
 - **`content_type` checks that the whole text arrived.** Rich editors could replace earlier pieces of a long text and report success with part of it in the field; the caret is now kept at the end between pieces and a short result is reported as an error.
 - **Uploaded files carry their MIME type, and are rebuilt in the page's own realm.** They used to reach the page with an empty type, which ChatGPT copes with by reading the bytes and Miro's "Upload from device" does not: it showed "Uploading..." and never finished.
+- **Typing into a background tab no longer times out.** Firefox throttles a hidden tab's timers, and the typing animation stalled there; the text now goes in at once when nobody can see the tab.
 - **Typed text stays in the editor's last paragraph.** In ProseMirror editors (ChatGPT) each piece of a long text became a paragraph of its own.
 - **`content_upload_files` refuses a disabled file input** instead of reporting files attached that the page dropped.
 - **An overlay left by an older version is rebuilt** after an update, instead of breaking every action in tabs that stayed open.
