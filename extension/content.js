@@ -148,7 +148,10 @@ async function typeInto(el, text, clear) {
   } else if (el.isContentEditable) {
     caretToEnd(el);
   }
-  const size = Math.max(1, Math.ceil(text.length * TYPE_STEP_MS / TYPE_ANIMATION_MS));
+  // In a hidden tab the text goes in at once: nobody is watching, and Firefox
+  // throttles its timers so hard that a 300-character text took minutes.
+  const size = document.hidden ? Math.max(1, text.length)
+    : Math.max(1, Math.ceil(text.length * TYPE_STEP_MS / TYPE_ANIMATION_MS));
   const pieces = [];
   for (let i = 0; i < text.length; i += size) pieces.push(text.slice(i, i + size));
   if (pieces.length === 0) pieces.push('');
@@ -528,7 +531,8 @@ async function moveCursorTo(el, press) {
   pointer.getBoundingClientRect();
   pointer.style.transition = `transform ${CURSOR_MOVE_MS}ms cubic-bezier(.3,.7,.4,1)`;
   pointer.style.transform = `translate(${to.x}px, ${to.y}px)`;
-  await new Promise(resolve => setTimeout(resolve, CURSOR_MOVE_MS));
+  // Nobody sees a hidden tab, and Firefox holds its timers back for seconds
+  if (!document.hidden) await new Promise(resolve => setTimeout(resolve, CURSOR_MOVE_MS));
   if (press) {
     const ripple = document.createElement('div');
     ripple.className = 'ripple';
