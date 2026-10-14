@@ -2010,7 +2010,7 @@ class FoxMCPTools:
                             return None, f"{full}: {error}"
             return upload_id, None
 
-        async def real_input(tab_id, ref, selector, purpose, act):
+        async def real_input(tab_id, ref, selector, purpose, act, prep_message=None):
             """Do act(bidi, context, element) with real input, when the browser has it
 
             Returns None when the browser has no real input (or it is not
@@ -2030,7 +2030,7 @@ class FoxMCPTools:
             if not ports:
                 return None
             token = uuid.uuid4().hex
-            prep, error = await page_request({
+            prep, error = await page_request(prep_message(token) if prep_message else {
                 "action": "content.real_input_prep",
                 "data": {"tabId": tab_id, "ref": ref, "selector": selector,
                          "purpose": purpose, "token": token}
@@ -2044,8 +2044,11 @@ class FoxMCPTools:
                     async with BidiSession(port) as bidi:
                         context = await bidi.find_tab(token)
                         server.real_input_found_on(port)
-                        element = await bidi.element(context, prep["selector"]) if prep.get("selector") else None
-                        await act(bidi, context, element)
+                        if prep_message:
+                            await act(bidi, context, prep)
+                        else:
+                            element = await bidi.element(context, prep["selector"]) if prep.get("selector") else None
+                            await act(bidi, context, element)
                         return prep, None
                 except BidiUnavailable as unavailable:
                     logger.info(f"Real input not on port {port}: {unavailable}")
@@ -2053,6 +2056,19 @@ class FoxMCPTools:
                     return None, str(failure)
             server.real_input_found_on(0)
             return None
+
+        def spot(tab_id, ref=None, selector=None, x=None, y=None, side=""):
+            """An element or a viewport point, as the content script takes it"""
+            if not ref and not selector and (x is None or y is None):
+                raise ValueError(f"Give {side}ref, {side}selector, or both {side}x and {side}y")
+            return {"ref": ref, "selector": selector, "x": x, "y": y}
+
+        async def real_pointer(tab_id, purpose, start, end, act):
+            """Real hover, point click or drag: the content script moves the
+            cursor and says where in the viewport, BiDi does the rest"""
+            return await real_input(tab_id, None, None, purpose, act, prep_message=lambda token: {
+                "action": "content.real_pointer_prep",
+                "data": {"tabId": tab_id, "from": start, "to": end, "purpose": purpose, "token": token}})
 
         def target(tab_id: int, ref: Optional[str], selector: Optional[str]) -> Dict[str, Any]:
             if not ref and not selector:
@@ -2085,7 +2101,9 @@ class FoxMCPTools:
             ref: Optional[str] = None,
             selector: Optional[str] = None,
             double_click: bool = False,
-            right_click: bool = False
+            right_click: bool = False,
+            x: Optional[int] = None,
+            y: Optional[int] = None
         ) -> str:
             """Click an element. With real input set up in the add-on's settings the
             click is a real one, which canvas apps and menus that ignore scripted
@@ -2098,8 +2116,27 @@ class FoxMCPTools:
                 double_click: Double-click instead, as opening a file or folder
                     in a file list usually needs (default: False)
                 right_click: Right-click, to open the page's context menu (default: False)
+                x: With y, click this point in the visible page (CSS pixels from the
+                    top left) instead of an element, for canvases such as a Miro board
+                y: See x
             """
             done = "Right-clicked" if right_click else "Double-clicked" if double_click else "Clicked"
+            if not ref and not selector:
+                start = spot(tab_id, x=x, y=y)
+                real = await real_pointer(tab_id, "click", start, None, lambda bidi, context, prep:
+                                          bidi.click_at(context, prep["from"]["x"], prep["from"]["y"],
+                                                        button=2 if right_click else 0,
+                                                        clicks=2 if double_click and not right_click else 1))
+                if real is not None:
+                    prep, error = real
+                    if error:
+                        return f"Failed to click: {error}"
+                    return f"{done} {prep.get('target')} at {x},{y} (real input)"
+                data, error = await page_request({"action": "content.click", "data": {
+                    "tabId": tab_id, **start, "doubleClick": double_click, "rightClick": right_click}})
+                if error:
+                    return f"Failed to click: {error}"
+                return f"{done} {data.get('clicked')}"
             real = await real_input(tab_id, ref, selector, "click", lambda bidi, context, element:
                                     bidi.click(context, element, button=2 if right_click else 0,
                                                clicks=2 if double_click and not right_click else 1))
@@ -2115,6 +2152,83 @@ class FoxMCPTools:
             if error:
                 return f"Failed to click: {error}"
             return f"{done} {data.get('clicked')}"
+
+        # Hover Tool
+        @self._tool()
+        async def content_hover(
+            tab_id: int, ref: Optional[str] = None, selector: Optional[str] = None,
+            x: Optional[int] = None, y: Optional[int] = None
+        ) -> str:
+            """Move the mouse onto an element or a point without clicking, to open
+            hover menus and show tooltips or buttons that appear on hover
+
+            Args:
+                tab_id: ID of the tab
+                ref: Element ref from content_snapshot
+                selector: CSS selector, used when no ref is given
+                x: With y, a point in the visible page (CSS pixels) instead of an element
+                y: See x
+            """
+            start = spot(tab_id, ref, selector, x, y)
+            real = await real_pointer(tab_id, "hover", start, None, lambda bidi, context, prep:
+                                      bidi.hover(context, prep["from"]["x"], prep["from"]["y"]))
+            if real is not None:
+                prep, error = real
+                if error:
+                    return f"Failed to hover: {error}"
+                return f"Hovering over {prep.get('target')} (real input)"
+            data, error = await page_request({"action": "content.hover", "data": {"tabId": tab_id, **start}})
+            if error:
+                return f"Failed to hover: {error}"
+            return f"Hovering over {data.get('hovered')}"
+
+        # Drag Tool
+        @self._tool()
+        async def content_drag(
+            tab_id: int,
+            from_ref: Optional[str] = None, from_selector: Optional[str] = None,
+            from_x: Optional[int] = None, from_y: Optional[int] = None,
+            to_ref: Optional[str] = None, to_selector: Optional[str] = None,
+            to_x: Optional[int] = None, to_y: Optional[int] = None
+        ) -> str:
+            """Drag from one element or point to another and let go: move items on
+            a board or canvas, reorder lists, drop a card in a column, move sliders
+
+            Each end is an element (ref or selector) or a point in the visible page
+            (x and y, CSS pixels). With real input set up it is a real mouse drag.
+
+            Args:
+                tab_id: ID of the tab
+                from_ref: Element ref to start on
+                from_selector: CSS selector to start on
+                from_x: With from_y, the point to start at
+                from_y: See from_x
+                to_ref: Element ref to drop on
+                to_selector: CSS selector to drop on
+                to_x: With to_y, the point to drop at
+                to_y: See to_x
+            """
+            start = spot(tab_id, from_ref, from_selector, from_x, from_y, "from_")
+            end = spot(tab_id, to_ref, to_selector, to_x, to_y, "to_")
+            async def drag_for_real(bidi, context, prep):
+                # Firefox's remote control starts a page's own drag-and-drop
+                # (draggable elements, links, images) but never drops, so those
+                # get the scripted drag, whose drop events pages do accept
+                if not prep.get("pageDragAndDrop"):
+                    await bidi.drag(context, prep["from"], prep["to"])
+
+            real = await real_pointer(tab_id, "drag", start, end, drag_for_real)
+            if real is not None:
+                prep, error = real
+                if error:
+                    return f"Failed to drag: {error}"
+                if not prep.get("pageDragAndDrop"):
+                    return f"Dragged {prep.get('target')} (real input)"
+            data, error = await page_request({"action": "content.drag",
+                                              "data": {"tabId": tab_id, "from": start, "to": end}})
+            if error:
+                return f"Failed to drag: {error}"
+            return f"Dragged {data.get('dragged')}"
 
         # Type Tool
         @self._tool()

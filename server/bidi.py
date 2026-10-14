@@ -32,6 +32,10 @@ logger = logging.getLogger(__name__)
 TAB_TOKEN_ATTR = 'data-foxmcp-tab'
 CONNECT_TIMEOUT = 3.0
 COMMAND_TIMEOUT = 30.0
+# A drag: how long the move takes, in how many steps, and the hold at each end
+DRAG_MS = 600
+DRAG_STEPS = 20
+DRAG_HOLD_MS = 120
 # Where Firefox's remote control usually listens; tried when a browser has
 # real input on but no port of its own set
 LIKELY_PORTS = range(9222, 9230)
@@ -168,6 +172,37 @@ class BidiSession:
         await self.command('input.performActions', {'context': context, 'actions': [{
             'type': 'pointer', 'id': 'mouse', 'parameters': {'pointerType': 'mouse'}, 'actions': steps}]})
         await self.command('input.releaseActions', {'context': context})
+
+    async def pointer(self, context: str, steps: List[Dict[str, Any]]):
+        await self.command('input.performActions', {'context': context, 'actions': [{
+            'type': 'pointer', 'id': 'mouse', 'parameters': {'pointerType': 'mouse'}, 'actions': steps}]})
+        await self.command('input.releaseActions', {'context': context})
+
+    async def hover(self, context: str, x: int, y: int):
+        await self.pointer(context, [{'type': 'pointerMove', 'x': x, 'y': y, 'duration': 120, 'origin': 'viewport'}])
+
+    async def click_at(self, context: str, x: int, y: int, button: int = 0, clicks: int = 1):
+        steps = [{'type': 'pointerMove', 'x': x, 'y': y, 'duration': 0, 'origin': 'viewport'}]
+        for _ in range(clicks):
+            steps += [{'type': 'pointerDown', 'button': button}, {'type': 'pointerUp', 'button': button}]
+        await self.pointer(context, steps)
+
+    async def drag(self, context: str, start: Dict[str, int], end: Dict[str, int]):
+        """Press at start, move to end the way a hand does (slow, fast, slow),
+        release. The short holds at each end are what many apps wait for
+        before they treat a press as the start of a drag, or a stop as a drop."""
+        steps: List[Dict[str, Any]] = [
+            {'type': 'pointerMove', 'x': start['x'], 'y': start['y'], 'duration': 0, 'origin': 'viewport'},
+            {'type': 'pointerDown', 'button': 0},
+            {'type': 'pause', 'duration': DRAG_HOLD_MS}]
+        for i in range(1, DRAG_STEPS + 1):
+            t = i / DRAG_STEPS
+            eased = t * t * t * (10 - 15 * t + 6 * t * t)  # minimum jerk
+            steps.append({'type': 'pointerMove', 'origin': 'viewport', 'duration': DRAG_MS // DRAG_STEPS,
+                          'x': round(start['x'] + (end['x'] - start['x']) * eased),
+                          'y': round(start['y'] + (end['y'] - start['y']) * eased)})
+        steps += [{'type': 'pause', 'duration': DRAG_HOLD_MS}, {'type': 'pointerUp', 'button': 0}]
+        await self.pointer(context, steps)
 
     async def keys(self, context: str, steps: List[Dict[str, Any]]):
         for start in range(0, len(steps), KEYS_PER_BATCH * 2):

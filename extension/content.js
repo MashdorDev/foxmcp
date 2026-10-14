@@ -63,6 +63,84 @@ function snapshot(maxElements) {
   return lines.join('\n');
 }
 
+// Where an action happens: an element (by ref or selector), scrolled into view,
+// or a point given as x and y in the viewport, for canvases. Returns the point
+// and whatever element is there.
+function targetPoint({ ref, selector, x, y }) {
+  if (ref || selector) {
+    const el = findTarget({ ref, selector });
+    el.scrollIntoView({ block: 'center', inline: 'center' });
+    const rect = el.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, el, size: Math.min(rect.width, rect.height) };
+  }
+  if (typeof x !== 'number' || typeof y !== 'number') {
+    throw new Error('Give an element (ref or selector) or a point (x and y)');
+  }
+  if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) {
+    throw new Error(`The point ${x},${y} is outside the visible page (${innerWidth}x${innerHeight})`);
+  }
+  return { x, y, el: document.elementFromPoint(x, y) || document.body, size: 24 };
+}
+
+function mouseInit(point, extra = {}) {
+  return { bubbles: true, cancelable: true, composed: true, view: window, clientX: point.x, clientY: point.y,
+    screenX: point.x + window.screenX, screenY: point.y + window.screenY, pointerId: 1, pointerType: 'mouse',
+    isPrimary: true, button: 0, ...extra };
+}
+
+// Scripted hover: what a mouse moving onto the point fires
+function hoverAt(point) {
+  const init = mouseInit(point);
+  for (const type of ['pointerover', 'pointerenter', 'pointermove']) point.el.dispatchEvent(new PointerEvent(type, init));
+  for (const type of ['mouseover', 'mouseenter', 'mousemove']) point.el.dispatchEvent(new MouseEvent(type, init));
+}
+
+// Scripted drag: the pointer and mouse events along the way, and the page's
+// drag-and-drop events when the element it starts on is draggable
+function usesPageDragAndDrop(el) {
+  return Boolean(el.closest('[draggable="true"]') || (el.closest('a[href], img') && !el.closest('[draggable="false"]')));
+}
+
+async function dragBetween(from, to, steps = 12) {
+  // A slider ignores scripted mouse events: set the value the drop point means
+  const range = from.el.closest('input[type="range"]');
+  if (range) {
+    const rect = range.getBoundingClientRect();
+    const share = Math.min(1, Math.max(0, (to.x - rect.left) / rect.width));
+    const min = Number(range.min || 0), max = Number(range.max || 100);
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(range, String(min + share * (max - min)));
+    range.dispatchEvent(new Event('input', { bubbles: true }));
+    range.dispatchEvent(new Event('change', { bubbles: true }));
+    return;
+  }
+  const transfer = new DataTransfer();
+  const draggable = usesPageDragAndDrop(from.el) ? from.el.closest('[draggable="true"], a[href], img') : null;
+  from.el.dispatchEvent(new PointerEvent('pointerdown', mouseInit(from, { buttons: 1 })));
+  from.el.dispatchEvent(new MouseEvent('mousedown', mouseInit(from, { buttons: 1 })));
+  if (draggable) draggable.dispatchEvent(new DragEvent('dragstart', { ...mouseInit(from), dataTransfer: transfer }));
+  let over = from.el;
+  for (let i = 1; i <= steps; i++) {
+    const t = minimumJerk(i / steps);
+    const point = { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t };
+    const el = document.elementFromPoint(point.x, point.y) || document.body;
+    el.dispatchEvent(new PointerEvent('pointermove', mouseInit(point, { buttons: 1 })));
+    el.dispatchEvent(new MouseEvent('mousemove', mouseInit(point, { buttons: 1 })));
+    if (draggable) {
+      if (el !== over) el.dispatchEvent(new DragEvent('dragenter', { ...mouseInit(point), dataTransfer: transfer }));
+      el.dispatchEvent(new DragEvent('dragover', { ...mouseInit(point), dataTransfer: transfer }));
+    }
+    over = el;
+    await new Promise(resolve => setTimeout(resolve, 16));
+  }
+  const end = document.elementFromPoint(to.x, to.y) || document.body;
+  if (draggable) {
+    end.dispatchEvent(new DragEvent('drop', { ...mouseInit(to), dataTransfer: transfer }));
+    draggable.dispatchEvent(new DragEvent('dragend', { ...mouseInit(to), dataTransfer: transfer }));
+  }
+  end.dispatchEvent(new PointerEvent('pointerup', mouseInit(to)));
+  end.dispatchEvent(new MouseEvent('mouseup', mouseInit(to)));
+}
+
 function findTarget({ ref, selector }) {
   const el = ref
     ? document.querySelector(`[${REF_ATTR}="${CSS.escape(ref)}"]`)
@@ -628,6 +706,11 @@ async function moveCursorTo(el, press) {
   el.scrollIntoView({ block: 'center', inline: 'center' });
   const rect = el.getBoundingClientRect();
   const to = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  return moveCursorToPoint(to, Math.min(rect.width, rect.height), press);
+}
+
+// The same move to a point in the viewport, for clicks and drags on a canvas
+async function moveCursorToPoint(to, targetSize, press) {
   const from = cursorPos || to;
   cursorPos = to;
   const root = overlayRoot().shadowRoot;
@@ -638,7 +721,7 @@ async function moveCursorTo(el, press) {
   // Nobody sees a hidden tab, and Firefox holds its timers back for seconds
   if (document.hidden || !settings.overlayEnabled || !settings.cursorEnabled) return;
   if (Math.hypot(to.x - from.x, to.y - from.y) >= 2) {
-    const { points, duration } = humanPath(from, to, Math.min(rect.width, rect.height));
+    const { points, duration } = humanPath(from, to, targetSize);
     const motion = pointer.animate(
       points.map(({ x, y, offset }) => ({ transform: `translate(${x}px, ${y}px)`, offset })),
       { duration, easing: 'linear' });
@@ -701,6 +784,23 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         break;
 
       case 'click': {
+        // A click at a point (a canvas) rather than on an element
+        if (!data.ref && !data.selector) {
+          const point = targetPoint(data);
+          showOverlay('clicking');
+          moveCursorToPoint(point, point.size, true)
+            .then(() => {
+              const init = mouseInit(point, data.rightClick ? { button: 2, buttons: 2 } : { buttons: 1 });
+              for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
+                point.el.dispatchEvent(new (type.startsWith('pointer') ? PointerEvent : MouseEvent)(type, init));
+              }
+              point.el.dispatchEvent(new MouseEvent(data.rightClick ? 'contextmenu' : 'click', init));
+              if (data.doubleClick && !data.rightClick) point.el.dispatchEvent(new MouseEvent('dblclick', { ...init, detail: 2 }));
+              sendResponse({ clicked: `${describe(point.el)} at ${point.x},${point.y}` });
+            })
+            .catch(error => sendResponse({ error: error.message }));
+          break;
+        }
         const el = findTarget(data);
         showOverlay('clicking');
         // A bare "Clicking" from the background gets the element's name
@@ -748,6 +848,56 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
             sendResponse(el ? { selector: `[${REF_ATTR}="${refFor(el)}"]`, target: describe(el) } : { target: 'the page' });
           })
           .catch(error => sendResponse({ error: error.message }));
+        break;
+      }
+
+      case 'hover': {
+        const point = targetPoint(data);
+        showOverlay('clicking');
+        moveCursorToPoint(point, point.size, false)
+          .then(() => {
+            hoverAt(point);
+            sendResponse({ hovered: point.el === document.body ? `${point.x},${point.y}` : describe(point.el) });
+          })
+          .catch(error => sendResponse({ error: error.message }));
+        break;
+      }
+
+      case 'drag': {
+        const from = targetPoint(data.from);
+        const to = targetPoint(data.to);
+        showOverlay('clicking');
+        moveCursorToPoint(from, from.size, true)
+          .then(() => Promise.all([dragBetween(from, to), moveCursorToPoint(to, to.size, false)]))
+          .then(() => sendResponse({ dragged: `${describe(from.el)} to ${describe(to.el)}` }))
+          .catch(error => sendResponse({ error: error.message }));
+        break;
+      }
+
+      // Points for a real (BiDi) hover, point click or drag: the cursor moves to
+      // the start, and the server gets viewport coordinates to send to Firefox
+      case 'realPointerPrep': {
+        try {
+          const from = targetPoint(data.from);
+          const to = data.to ? targetPoint(data.to) : null;
+          showOverlay('clicking');
+          moveCursorToPoint(from, from.size, data.purpose === 'click' || data.purpose === 'drag')
+            .then(() => {
+              document.documentElement.setAttribute('data-foxmcp-tab', data.token);
+              if (to) moveCursorToPoint(to, to.size, false);  // follows the real drag on screen
+              sendResponse({
+                from: { x: Math.round(from.x), y: Math.round(from.y) },
+                to: to && { x: Math.round(to.x), y: Math.round(to.y) },
+                target: describe(from.el) + (to ? ` to ${describe(to.el)}` : ''),
+                // Firefox's remote control starts the page's drag-and-drop but
+                // cannot drop, so those drags are scripted (see content_drag)
+                pageDragAndDrop: data.purpose === 'drag' && usesPageDragAndDrop(from.el),
+              });
+            })
+            .catch(error => sendResponse({ error: error.message }));
+        } catch (error) {
+          sendResponse({ error: error.message });
+        }
         break;
       }
 
