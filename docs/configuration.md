@@ -492,6 +492,13 @@ reading and search (Rodden et al., CHI 2008; Huang, White and Buscher, CHI 2012)
 Only the drawn cursor moves; the page gets no mouse events from it. With "Show text
 being typed in" off, text goes in at once, which is faster.
 
+The cursor takes the shape the system cursor would have where it is, as the page
+sets it: an arrow, a pointing hand over links and buttons, an I-beam over text,
+arrows for moving and resizing, a no-entry sign, a crosshair, a magnifier, and an
+arrow with a busy, help, copy or link mark. A drag shows the hand: open on the way
+to the item, closed while the button is held, with a plus over a place that takes
+a dropped item and a cross over one that does not, and open again on letting go.
+
 The toolbar button shows "off" when no server is connected, "stop" when the agent
 is paused, and otherwise how many tabs the agent is working in. "Show status on
 the button" turns that off.
