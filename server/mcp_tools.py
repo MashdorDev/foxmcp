@@ -2023,7 +2023,7 @@ class FoxMCPTools:
                             return None, f"{full}: {error}"
             return upload_id, None
 
-        async def real_input(tab_id, ref, selector, purpose, act, prep_message=None):
+        async def real_input(tab_id, ref, selector, purpose, act, prep_message=None, target_name=None):
             """Do act(backend, context, element) with real input, when the browser has it
 
             Returns None when the browser has no real input (or it is not
@@ -2052,7 +2052,7 @@ class FoxMCPTools:
             token = uuid.uuid4().hex
             message = prep_message(token) if prep_message else {
                 "action": "content.real_input_prep",
-                "data": {"tabId": tab_id, "ref": ref, "selector": selector,
+                "data": {"tabId": tab_id, "ref": ref, "selector": selector, "targetName": target_name,
                          "purpose": purpose, "token": token}
             }
             # Window messages reach only the tab showing in its window
@@ -2060,6 +2060,8 @@ class FoxMCPTools:
             prep, error = await page_request(message)
             if error:
                 return None, error
+
+            prep["token"] = token
 
             async def run(backend, context):
                 if prep_message:
@@ -2093,11 +2095,11 @@ class FoxMCPTools:
                 server.real_input_found_on(0)
             return None
 
-        def spot(tab_id, ref=None, selector=None, x=None, y=None, side=""):
+        def spot(tab_id, ref=None, selector=None, x=None, y=None, side="", name=None):
             """An element or a viewport point, as the content script takes it"""
-            if not ref and not selector and (x is None or y is None):
-                raise ValueError(f"Give {side}ref, {side}selector, or both {side}x and {side}y")
-            return {"ref": ref, "selector": selector, "x": x, "y": y}
+            if not ref and not selector and not name and (x is None or y is None):
+                raise ValueError(f"Give {side}ref, {side}selector, {side}text, or both {side}x and {side}y")
+            return {"ref": ref, "selector": selector, "targetName": name, "x": x, "y": y}
 
         async def real_pointer(tab_id, purpose, start, end, act, button=0):
             """Real hover, point click or drag: the content script moves the
@@ -2107,10 +2109,20 @@ class FoxMCPTools:
                 "data": {"tabId": tab_id, "from": start, "to": end, "purpose": purpose, "token": token,
                          "button": button}})
 
-        def target(tab_id: int, ref: Optional[str], selector: Optional[str]) -> Dict[str, Any]:
-            if not ref and not selector:
-                raise ValueError("Pass either ref (from content_snapshot) or selector")
-            return {"tabId": tab_id, "ref": ref, "selector": selector}
+        def target(tab_id: int, ref: Optional[str], selector: Optional[str],
+                   name: Optional[str] = None) -> Dict[str, Any]:
+            if not ref and not selector and not name:
+                raise ValueError("Pass ref (from content_snapshot), selector, or the element's visible text")
+            return {"tabId": tab_id, "ref": ref, "selector": selector, **({"targetName": name} if name else {})}
+
+        async def click_effect(tab_id: int, prep: Dict[str, Any]) -> str:
+            """What a real click changed on the page, from the content script"""
+            data, error = await page_request({"action": "content.click_effect",
+                                              "data": {"tabId": tab_id, "token": prep.get("token")}})
+            return "" if error or not data.get("effect") else f": {data['effect']}"
+
+        def effect_of(data: Dict[str, Any]) -> str:
+            return f": {data['effect']}" if data.get("effect") else ""
 
         clipboard = {"agent": None}
 
@@ -2175,11 +2187,17 @@ class FoxMCPTools:
             double_click: bool = False,
             right_click: bool = False,
             x: Optional[int] = None,
-            y: Optional[int] = None
+            y: Optional[int] = None,
+            text: Optional[str] = None
         ) -> str:
             """Click an element. With real input set up in the add-on's settings the
             click is a real one, which canvas apps and menus that ignore scripted
             clicks accept; otherwise the events are dispatched by script.
+
+            The result says what the click changed: a new address, a menu or
+            dialog opening or closing, the caret moving into a field, the element
+            expanding or getting checked. When a selector matches several
+            elements, the first visible one is clicked.
 
             Args:
                 tab_id: ID of the tab
@@ -2191,9 +2209,12 @@ class FoxMCPTools:
                 x: With y, click this point in the visible page (CSS pixels from the
                     top left) instead of an element, for canvases such as a Miro board
                 y: See x
+                text: Click the element showing this text or named this (its label,
+                    aria-label or placeholder), as a person would point at it,
+                    instead of a ref or selector: "Send", "Add comment"
             """
             done = "Right-clicked" if right_click else "Double-clicked" if double_click else "Clicked"
-            if not ref and not selector:
+            if not ref and not selector and not text:
                 start = spot(tab_id, x=x, y=y)
                 real = await real_pointer(tab_id, "click", start, None, lambda bidi, context, prep:
                                           bidi.click_at(context, prep["from"]["x"], prep["from"]["y"],
@@ -2203,33 +2224,35 @@ class FoxMCPTools:
                     prep, error = real
                     if error:
                         return f"Failed to click: {error}"
-                    return f"{done} {prep.get('target')} at {x},{y} (real input)"
+                    return f"{done} {prep.get('target')} at {x},{y} (real input){await click_effect(tab_id, prep)}"
                 data, error = await page_request({"action": "content.click", "data": {
                     "tabId": tab_id, **start, "doubleClick": double_click, "rightClick": right_click}})
                 if error:
                     return f"Failed to click: {error}"
-                return f"{done} {data.get('clicked')}"
+                return f"{done} {data.get('clicked')}{effect_of(data)}"
             real = await real_input(tab_id, ref, selector, "click", lambda bidi, context, element:
                                     bidi.click(context, element, button=2 if right_click else 0,
-                                               clicks=2 if double_click and not right_click else 1))
+                                               clicks=2 if double_click and not right_click else 1),
+                                    target_name=text)
             if real is not None:
                 prep, error = real
                 if error:
                     return f"Failed to click: {error}"
-                return f"{done} {prep.get('target')} (real input)"
+                return f"{done} {prep.get('target')} (real input){await click_effect(tab_id, prep)}"
             data, error = await page_request({
                 "action": "content.click",
-                "data": {**target(tab_id, ref, selector), "doubleClick": double_click, "rightClick": right_click}
+                "data": {**target(tab_id, ref, selector, text), "doubleClick": double_click,
+                         "rightClick": right_click}
             })
             if error:
                 return f"Failed to click: {error}"
-            return f"{done} {data.get('clicked')}"
+            return f"{done} {data.get('clicked')}{effect_of(data)}"
 
         # Hover Tool
         @self._tool()
         async def content_hover(
             tab_id: int, ref: Optional[str] = None, selector: Optional[str] = None,
-            x: Optional[int] = None, y: Optional[int] = None
+            x: Optional[int] = None, y: Optional[int] = None, text: Optional[str] = None
         ) -> str:
             """Move the mouse onto an element or a point without clicking, to open
             hover menus and show tooltips or buttons that appear on hover
@@ -2240,8 +2263,10 @@ class FoxMCPTools:
                 selector: CSS selector, used when no ref is given
                 x: With y, a point in the visible page (CSS pixels) instead of an element
                 y: See x
+                text: The element showing this text or named this, instead of a ref
+                    or selector
             """
-            start = spot(tab_id, ref, selector, x, y)
+            start = spot(tab_id, ref, selector, x, y, name=text)
             real = await real_pointer(tab_id, "hover", start, None, lambda bidi, context, prep:
                                       bidi.hover(context, prep["from"]["x"], prep["from"]["y"]))
             if real is not None:
@@ -2323,7 +2348,8 @@ class FoxMCPTools:
             ref: Optional[str] = None,
             selector: Optional[str] = None,
             clear: bool = True,
-            submit: bool = False
+            submit: bool = False,
+            field: Optional[str] = None
         ) -> str:
             """Type text into an input, textarea or editable element
 
@@ -2334,6 +2360,8 @@ class FoxMCPTools:
                 selector: CSS selector, used when no ref is given
                 clear: Replace the current value instead of appending (default: True)
                 submit: Press Enter afterwards (default: False)
+                field: The field's label, aria-label or placeholder ("Search",
+                    "Leave a reply"), instead of a ref or selector
             """
             async def type_for_real(bidi, context, element):
                 await bidi.click(context, element)
@@ -2342,24 +2370,26 @@ class FoxMCPTools:
                     await bidi.press(context, "Backspace")
                 await bidi.type_text(context, text)
 
-            real = await real_input(tab_id, ref, selector, "type", type_for_real)
+            real = await real_input(tab_id, ref, selector, "type", type_for_real, target_name=field)
             if real is not None:
                 prep, error = real
                 if error:
                     return f"Failed to type: {error}"
+                # The field the prep found, so a name is not looked up again
+                found = {"tabId": tab_id, "ref": None, "selector": prep.get("selector")}
                 checked, error = await page_request({
                     "action": "content.check_typed",
-                    "data": {**target(tab_id, ref, selector), "text": text}
+                    "data": {**found, "text": text}
                 })
                 if error:
                     return f"Failed to type: {error}"
                 if submit:
-                    await real_input(tab_id, ref, selector, "key",
+                    await real_input(tab_id, None, prep.get("selector"), "key",
                                      lambda bidi, context, element: bidi.press(context, "Enter"))
                 return f"Typed into {checked.get('typed')} (real input)"
             data, error = await page_request({
                 "action": "content.type",
-                "data": {**target(tab_id, ref, selector),
+                "data": {**target(tab_id, ref, selector, field),
                          "text": text, "clear": clear, "submit": submit}
             })
             if error:
@@ -2524,6 +2554,7 @@ class FoxMCPTools:
             data, error = await page_request({"action": "content.copy_image", "data": request})
             if error:
                 return f"Failed to copy the image: {error}"
+            clipboard["agent"] = await clipboard_stamp()
             return (f"Copied {data.get('copied')} to the clipboard "
                     f"({data.get('width')}x{data.get('height')} PNG)")
 

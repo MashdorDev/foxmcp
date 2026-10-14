@@ -7,10 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-10-14
+
 ### Added
 - **The person's clipboard stays theirs.** Paste keys and `content_paste` go through only while the clipboard holds what the agent itself copied; otherwise they fail and say why. Copy keys report whether anything was copied. On Windows the server compares the clipboard's change counter, which never reveals the contents; elsewhere the add-on compares a hash. A failed copy followed by a paste had put the person's own messages on a shared Miro board. `allow_clipboard=True` pastes the person's clipboard when they ask for it.
+- **Click, hover and type by what a person sees.** `content_click(text=...)`, `content_hover(text=...)` and `content_type(field=...)` find the element by its label, aria-label, placeholder or text.
+- **Clicks say what they changed:** a new address, a menu or dialog opening or closing, the caret moving into a field, the element expanding or getting checked, or none of these.
 
 ### Changed
+- A selector that matches several elements acts on the first visible one (ChatGPT keeps a hidden second composer).
 - `tabs_capture_screenshot` without a filename returns the image itself instead of a cut-off data URL, and a bare filename is saved in the temporary folder instead of the server's working folder.
 
 ### Fixed

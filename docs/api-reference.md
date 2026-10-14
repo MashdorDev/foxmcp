@@ -91,11 +91,18 @@ it, which keeps the tool list shorter.
 - `content_get_html(tab_id)` - Get page HTML source
 - `content_execute_script(tab_id, code)` - Execute JavaScript directly
 - `content_snapshot(tab_id, max_elements=300)` - List visible interactive elements, each with a ref
-- `content_click(tab_id, ref=None, selector=None, double_click=False, right_click=False, x=None, y=None)` - Click an element by ref or selector, or a point
+- `content_click(tab_id, ref=None, selector=None, double_click=False, right_click=False, x=None, y=None, text=None)` - Click an element by ref, selector or visible text, or a point
+  - `text` finds the element the way a person points at it: its label, aria-label,
+    placeholder or text, preferring what is visible, an exact name, and something
+    clickable
+  - The result says what the click changed: a new address, a menu or dialog
+    opening or closing, the caret moving into a field, the element expanding or
+    getting checked, or that none of these happened
+  - When a selector matches several elements, the first visible one is used
   - `right_click` opens the page's context menu
   - `x` and `y` click a point in the visible page (CSS pixels from the top left)
     instead of an element, for canvases such as a Miro board
-- `content_hover(tab_id, ref=None, selector=None, x=None, y=None)` - Move the mouse onto an element or a point without clicking
+- `content_hover(tab_id, ref=None, selector=None, x=None, y=None, text=None)` - Move the mouse onto an element or a point without clicking
   - Opens hover menus and shows tooltips or buttons that only appear on hover
 - `content_drag(tab_id, from_ref=None, from_selector=None, from_x=None, from_y=None, to_ref=None, to_selector=None, to_x=None, to_y=None, button="left")` - Drag from one element or point to another and let go
   - Each end is an element (`*_ref` or `*_selector`) or a point (`*_x` with `*_y`)
@@ -104,7 +111,8 @@ it, which keeps the tool list shorter.
   - `button` is `"left"`, `"middle"` or `"right"`. Canvas apps pan the view with
     one of the other two held: Miro with the right button, Figma, draw.io and
     many maps with the middle one
-- `content_type(tab_id, text, ref=None, selector=None, clear=True, submit=False)` - Type into an input or editable element
+- `content_type(tab_id, text, ref=None, selector=None, clear=True, submit=False, field=None)` - Type into an input or editable element
+  - `field` names the field by its label, aria-label or placeholder instead of a ref or selector
   - Checks afterwards that the whole text arrived, and reports a short result as an error
   - Under real input a line break is typed as Shift+Enter, which adds a line in chat
     boxes where a plain Enter would send the message

@@ -66,9 +66,9 @@ function snapshot(maxElements) {
 // Where an action happens: an element (by ref or selector), scrolled into view,
 // or a point given as x and y in the viewport, for canvases. Returns the point
 // and whatever element is there.
-function targetPoint({ ref, selector, x, y }) {
-  if (ref || selector) {
-    const el = findTarget({ ref, selector });
+function targetPoint({ ref, selector, targetName, x, y }) {
+  if (ref || selector || targetName) {
+    const el = findTarget({ ref, selector, targetName });
     el.scrollIntoView({ block: 'center', inline: 'center' });
     const rect = el.getBoundingClientRect();
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, el, size: Math.min(rect.width, rect.height) };
@@ -148,14 +148,124 @@ async function dragBetween(from, to, steps = 12, button = 0) {
   end.dispatchEvent(new MouseEvent('mouseup', mouseInit(to, { button })));
 }
 
-function findTarget({ ref, selector }) {
-  const el = ref
-    ? document.querySelector(`[${REF_ATTR}="${CSS.escape(ref)}"]`)
-    : document.querySelector(selector);
-  if (!el) {
-    throw new Error(ref ? `No element with ref ${ref}; take a new snapshot` : `No element matches ${selector}`);
+function hasTarget(data) {
+  return Boolean(data.ref || data.selector || data.targetName);
+}
+
+// Whether a person could see the element. A file input is usually hidden
+// behind its button, so it counts as shown when the form or box holding it is.
+function isShown(el) {
+  const shown = node => {
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 &&
+      (node.checkVisibility ? node.checkVisibility({ visibilityProperty: true }) : true);
+  };
+  if (shown(el)) return true;
+  if (el instanceof HTMLInputElement && el.type === 'file') {
+    const holder = el.closest('form') || el.parentElement;
+    return Boolean(holder && shown(holder));
   }
-  return el;
+  return false;
+}
+
+// The name a person would read off an element: its label, its text, or what
+// a field says while empty
+function nameOf(el) {
+  const label = el.labels && el.labels[0] ? el.labels[0].innerText : '';
+  const text = el.getAttribute('aria-label') || el.getAttribute('alt') || label || el.getAttribute('placeholder') ||
+    (el.tagName === 'INPUT' && /^(button|submit|reset)$/.test(el.type) ? el.value : '') ||
+    (el.innerText && el.innerText.length < 200 ? el.innerText : '') || el.getAttribute('title') || '';
+  return text.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+const NAMED_ELEMENTS = 'a, button, input, select, textarea, summary, label, img, [role], [aria-label], [title], ' +
+  '[placeholder], [contenteditable=""], [contenteditable="true"], li, td, th, span, div, p, h1, h2, h3, h4, h5, h6';
+const ACTIVE_ELEMENTS = 'a[href], button, input, select, textarea, summary, [role=button], [role=link], [role=menuitem], ' +
+  '[role=option], [role=tab], [role=checkbox], [role=radio], [role=switch], [contenteditable=""], [contenteditable="true"]';
+
+// An element found by the name a person sees on it, the way they would point
+// at it: shown before hidden, an exact name before one that starts or merely
+// contains it, something that can be clicked or typed into before plain text,
+// and the innermost element before the boxes around it
+// Compares two rankings place by place, the first difference deciding
+const outranks = (a, b) => {
+  const i = a.findIndex((value, index) => value !== b[index]);
+  return i >= 0 && a[i] > b[i];
+};
+
+function findByName(name) {
+  const wanted = name.replace(/\s+/g, ' ').trim().toLowerCase();
+  let best = null;
+  for (const el of document.querySelectorAll(NAMED_ELEMENTS)) {
+    const have = nameOf(el);
+    if (!have) continue;
+    const match = have === wanted ? 3 : have.startsWith(wanted) ? 2 : have.includes(wanted) ? 1 : 0;
+    if (!match) continue;
+    const score = [isShown(el) ? 1 : 0, match, el.matches(ACTIVE_ELEMENTS) ? 1 : 0, -el.getElementsByTagName('*').length];
+    if (!best || outranks(score, best.score)) best = { el, score };
+  }
+  if (!best) throw new Error(`Nothing on the page is named "${name}"`);
+  // A label stands for the field it names
+  if (best.el instanceof HTMLLabelElement && best.el.control) return best.el.control;
+  return best.el;
+}
+
+// When a selector matches more than one element, the first one a person can
+// see: pages keep hidden copies of composers, menus and dialogs, and acting on
+// the hidden one does nothing visible (ChatGPT has two composers)
+function findTarget({ ref, selector, targetName }) {
+  if (ref) {
+    const el = document.querySelector(`[${REF_ATTR}="${CSS.escape(ref)}"]`);
+    if (!el) throw new Error(`No element with ref ${ref}; take a new snapshot`);
+    return el;
+  }
+  if (targetName && !selector) return findByName(targetName);
+  const all = [...document.querySelectorAll(selector)];
+  if (!all.length) throw new Error(`No element matches ${selector}`);
+  return all.find(isShown) || all[0];
+}
+
+// What a click changed that the agent cannot see in its own result: the
+// address, the focus (a text editor opening), menus and dialogs, and the
+// clicked element's own expanded or checked state. Canvas apps change only
+// pixels, so "nothing" is reported as nothing in these.
+const OVERLAYS = '[role=dialog], [role=alertdialog], [role=menu], [role=listbox], dialog[open], [aria-modal=true]';
+
+function pageState(el) {
+  const overlays = [...document.querySelectorAll(OVERLAYS)].filter(isShown);
+  const focus = document.activeElement;
+  return {
+    url: location.href, el,
+    overlays, focus,
+    editing: Boolean(focus && focus !== document.body &&
+      (focus.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(focus.tagName))),
+    expanded: el?.getAttribute?.('aria-expanded'),
+    checked: el ? el.checked ?? el.getAttribute?.('aria-checked') : undefined,
+  };
+}
+
+const pendingClicks = new Map();
+
+async function clickEffect(before) {
+  await new Promise(resolve => setTimeout(resolve, 400));
+  const after = pageState(before.el && before.el.isConnected ? before.el : null);
+  const changes = [];
+  if (after.url !== before.url) changes.push(`the page went to ${after.url}`);
+  const opened = after.overlays.filter(o => !before.overlays.includes(o));
+  const closed = before.overlays.filter(o => !after.overlays.includes(o));
+  for (const o of opened) changes.push(`opened ${describe(o)}`);
+  if (closed.length) changes.push(`closed ${closed.length === 1 ? 'a' : closed.length} menu or dialog`);
+  if (after.focus !== before.focus && after.editing) changes.push(`the caret is now in ${describe(after.focus)}`);
+  else if (before.editing && !after.editing) changes.push('the caret left the field it was in');
+  if (before.el && !before.el.isConnected) changes.push('the clicked element went away');
+  if (after.expanded !== before.expanded && after.expanded != null) {
+    changes.push(after.expanded === 'true' ? 'it expanded' : 'it collapsed');
+  }
+  if (after.checked !== before.checked && after.checked != null) {
+    changes.push(after.checked === true || after.checked === 'true' ? 'it is now checked' : 'it is now unchecked');
+  }
+  return changes.length ? changes.join('; ')
+    : 'no change to the address, focus, menus or dialogs (a canvas may still have changed)';
 }
 
 // Sites listen on pointerdown or mousedown as often as on click (Google Drive's
@@ -1029,8 +1139,9 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       case 'click': {
         // A click at a point (a canvas) rather than on an element
-        if (!data.ref && !data.selector) {
+        if (!hasTarget(data)) {
           const point = targetPoint(data);
+          const before = pageState(point.el);
           showOverlay('clicking');
           moveCursorToPoint(point, point.size, true)
             .then(() => {
@@ -1040,8 +1151,9 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
               }
               point.el.dispatchEvent(new MouseEvent(data.rightClick ? 'contextmenu' : 'click', init));
               if (data.doubleClick && !data.rightClick) point.el.dispatchEvent(new MouseEvent('dblclick', { ...init, detail: 2 }));
-              sendResponse({ clicked: `${describe(point.el)} at ${point.x},${point.y}` });
+              return clickEffect(before);
             })
+            .then(effect => sendResponse({ clicked: `${describe(point.el)} at ${point.x},${point.y}`, effect }))
             .catch(error => sendResponse({ error: error.message }));
           break;
         }
@@ -1053,11 +1165,13 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
             .replace(/\s+/g, ' ').trim().slice(0, 40);
           if (name) setLabel(`Clicking "${name}"`);
         }
+        const before = pageState(el);
         moveCursorTo(el, true)
           .then(() => {
             clickElement(el, data.rightClick ? 'right' : data.doubleClick ? 2 : 1);
-            sendResponse({ clicked: describe(el) });
+            return clickEffect(before);
           })
+          .then(effect => sendResponse({ clicked: describe(el), effect }))
           .catch(error => sendResponse({ error: error.message }));
         break;
       }
@@ -1080,7 +1194,8 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
       // can find this tab among BiDi's browsing contexts, whose ids are
       // unrelated to the extension's tab ids.
       case 'realInputPrep': {
-        const el = data.ref || data.selector ? findTarget(data) : null;
+        const el = hasTarget(data) ? findTarget(data) : null;
+        if (data.purpose === 'click') pendingClicks.set(data.token, pageState(el));
         showOverlay(data.purpose === 'type' ? 'typing' : 'clicking');
         if (el && data.purpose === 'click' && agentLabel === 'Clicking') {
           const name = (el.getAttribute('aria-label') || el.innerText || el.value || el.title || '')
@@ -1136,6 +1251,7 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
           const from = targetPoint(data.from);
           const to = data.to ? targetPoint(data.to) : null;
           const drag = data.purpose === 'drag';
+          if (data.purpose === 'click') pendingClicks.set(data.token, pageState(from.el));
           const dragAndDrop = drag && !data.button && usesPageDragAndDrop(from.el);
           showOverlay(drag ? 'grab' : 'clicking');
           moveCursorToPoint(from, from.size, data.purpose === 'click' || drag)
@@ -1165,6 +1281,19 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         break;
       }
 
+      // After a real click the server asks what it changed, against the page
+      // as it was when the click was prepared
+      case 'clickEffect': {
+        const before = pendingClicks.get(data.token);
+        pendingClicks.delete(data.token);
+        if (!before) {
+          sendResponse({ effect: '' });
+          break;
+        }
+        clickEffect(before).then(effect => sendResponse({ effect }));
+        break;
+      }
+
       case 'checkTypedText': {
         const el = findTarget(data);
         try {
@@ -1178,7 +1307,7 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
 
       case 'pressKey': {
-        const el = data.ref || data.selector ? findTarget(data) : (document.activeElement || document.body);
+        const el = hasTarget(data) ? findTarget(data) : (document.activeElement || document.body);
         showOverlay('typing');
         pressKey(el, data.key);
         sendResponse({ pressed: data.key });
@@ -1238,7 +1367,7 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
       // of the paste; the paste event bubbles from it to the document, where
       // canvas apps listen.
       case 'paste': {
-        const el = data.ref || data.selector ? findTarget(data) : null;
+        const el = hasTarget(data) ? findTarget(data) : null;
         const previous = document.activeElement;
         showOverlay('typing');
         (el ? moveCursorTo(el, true) : Promise.resolve()).then(() => {

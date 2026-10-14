@@ -1,5 +1,5 @@
 """
-Tests for the paste guard and where screenshots go
+Tests for the paste guard, click by visible text and where screenshots go
 
 The guard keeps the person's own clipboard off pages: a paste goes through
 only while the clipboard still holds what the agent copied. The clipboard is
@@ -100,6 +100,18 @@ class TestPasteGuard:
     async def test_the_person_can_ask_for_their_own_clipboard(self, call_tool, server):
         result = await call_tool("content_press_key", tab_id=4, key="Shift+Insert", allow_clipboard=True)
         assert not result.startswith("Failed")
+
+
+class TestClickByText:
+
+    @pytest.mark.asyncio
+    async def test_the_visible_text_is_sent_as_the_target(self, call_tool, server):
+        server.response = {"type": "response", "data": {
+            "clicked": '[r3] button "Send"', "effect": "closed a menu or dialog"}}
+        result = await call_tool("content_click", tab_id=4, text="Send")
+        request = sent(server, "content.click")[-1]
+        assert request["data"]["targetName"] == "Send"
+        assert result == 'Clicked [r3] button "Send": closed a menu or dialog'
 
 
 class TestScreenshots:
