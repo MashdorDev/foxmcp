@@ -1143,6 +1143,7 @@ async function handleContentAction(id, action, data) {
       case 'content.real_pointer_prep':
       case 'content.hover':
       case 'content.drag':
+      case 'content.click_effect':
       case 'content.check_typed':
       case 'content.snapshot':
       case 'content.click':
@@ -1153,7 +1154,7 @@ async function handleContentAction(id, action, data) {
           'content.type': 'type', 'content.press_key': 'pressKey',
           'content.capture_file_input': 'captureFileInput', 'content.real_input_prep': 'realInputPrep',
           'content.check_typed': 'checkTypedText', 'content.real_pointer_prep': 'realPointerPrep',
-          'content.hover': 'hover', 'content.drag': 'drag' }[action];
+          'content.hover': 'hover', 'content.drag': 'drag', 'content.click_effect': 'clickEffect' }[action];
         // Real input posted to the window lands in the tab showing in it
         if (data.activate) await browser.tabs.update(data.tabId, { active: true });
         const pageResult = await sendMessageWithRetry(data.tabId, { action: pageAction, data });
