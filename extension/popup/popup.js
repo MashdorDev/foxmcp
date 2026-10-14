@@ -9,6 +9,12 @@
 
 const $ = id => document.getElementById(id);
 
+// The one line that installs and registers the server on a new computer,
+// pinned to this add-on's version so the two halves match
+const SETUP_COMMAND = 'claude mcp add firefox -- uvx --from ' +
+  `git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v${browser.runtime.getManifest().version} ` +
+  'mcp-bridge-for-firefox --stdio';
+
 async function render() {
   const status = await browser.runtime.sendMessage({ action: 'getConnectionStatus' })
     .catch(() => ({ connected: false, config: {}, extraPorts: [], agentTabs: [] }));
@@ -26,6 +32,10 @@ async function render() {
       ? `Trying ${url} again (attempt ${status.retryAttempts}). Is a Claude session with the bridge running?`
       : `Waiting for a server at ${url}`;
   }
+
+  // Not connected: either no Claude Code session is running, or the server was
+  // never set up on this computer, so say how to set it up
+  $('setup').hidden = status.connected || (status.extraPorts || []).length > 0;
 
   $('browserName').textContent = status.browserName || 'unnamed';
   $('browserName').classList.toggle('muted', !status.browserName);
@@ -70,6 +80,13 @@ async function render() {
 }
 
 $('version').textContent = `v${browser.runtime.getManifest().version}`;
+$('setupCommand').textContent = SETUP_COMMAND;
+
+$('copySetup').addEventListener('click', async () => {
+  await navigator.clipboard.writeText(SETUP_COMMAND);
+  $('copySetup').textContent = 'Copied';
+  setTimeout(() => { $('copySetup').textContent = 'Copy command'; }, 1500);
+});
 
 $('followAgent').addEventListener('change', event =>
   browser.storage.local.set({ followAgent: event.target.checked }));

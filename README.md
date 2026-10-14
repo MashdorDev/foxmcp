@@ -35,26 +35,17 @@ works in. Set each profile's name on the add-on's options page. Details:
 
 ### 1. The add-on
 
-Install **MCP Bridge for Firefox** from Firefox Add-ons (listing in review). Until then, install the signed build from this repo's releases: download [mcp-bridge-for-firefox-1.7.1.xpi](https://github.com/MashdorDev/mcp-bridge-for-firefox/releases/download/v1.7.1/mcp-bridge-for-firefox-1.7.1.xpi) and open it in Firefox.
+Install **MCP Bridge for Firefox** from Firefox Add-ons (listing in review). Until then, install the signed build from this repo's releases: download [mcp-bridge-for-firefox-1.7.2.xpi](https://github.com/MashdorDev/mcp-bridge-for-firefox/releases/download/v1.7.2/mcp-bridge-for-firefox-1.7.2.xpi) and open it in Firefox.
 
-### 2. The MCP server
+### 2. The MCP server, in one command
 
-Python 3.10 or newer.
-
-```bash
-git clone https://github.com/MashdorDev/mcp-bridge-for-firefox.git
-cd mcp-bridge-for-firefox
-python -m venv venv
-venv/bin/pip install -r server/requirements.txt        # Windows: venv\Scripts\pip
-```
-
-### 3. Connect your AI client
-
-Claude Code, letting the client start the server:
+The server runs inside your AI client, which starts it when a session starts. With [uv](https://docs.astral.sh/uv/) installed, this downloads, installs and registers it for Claude Code (no clone, no virtualenv):
 
 ```bash
-claude mcp add firefox -- /path/to/mcp-bridge-for-firefox/venv/bin/python /path/to/mcp-bridge-for-firefox/server/server.py --stdio
+claude mcp add firefox -- uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.7.2 mcp-bridge-for-firefox --stdio
 ```
+
+Then restart Claude Code, or run `/mcp` and reconnect. The add-on's toolbar popup shows the same command, with a Copy button, whenever it has no server to talk to.
 
 Any client that reads an `mcp.json` (Cursor, Claude Desktop, VS Code):
 
@@ -62,14 +53,24 @@ Any client that reads an `mcp.json` (Cursor, Claude Desktop, VS Code):
 {
   "mcpServers": {
     "firefox": {
-      "command": "/path/to/mcp-bridge-for-firefox/venv/bin/python",
-      "args": ["/path/to/mcp-bridge-for-firefox/server/server.py", "--stdio"]
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.7.2", "mcp-bridge-for-firefox", "--stdio"]
     }
   }
 }
 ```
 
-The add-on connects to the server on `localhost:8765` and keeps retrying while no server is running, so start order doesn't matter. Under `--stdio` only one client at a time gets the browser; to share it between several, run the server in HTTP mode (`python server/server.py`) and point clients at `http://localhost:3000/mcp/`. See [docs/configuration.md](docs/configuration.md).
+To run it from a clone instead (Python 3.10 or newer):
+
+```bash
+git clone https://github.com/MashdorDev/mcp-bridge-for-firefox.git
+cd mcp-bridge-for-firefox
+python -m venv venv
+venv/bin/pip install .                                  # Windows: venv\Scripts\pip
+claude mcp add firefox -- /path/to/mcp-bridge-for-firefox/venv/bin/mcp-bridge-for-firefox --stdio
+```
+
+The add-on connects to the server on `localhost:8765` and keeps retrying while none is running, so start order doesn't matter. Each Claude session starts its own server; the second one takes the next free port, and the add-on connects to all of them, so several sessions can use the browser at once. See [docs/configuration.md](docs/configuration.md).
 
 ## Privacy
 
