@@ -58,7 +58,7 @@ const ACTION_PERMISSIONS = {
     'content.real_input_prep', 'content.check_typed', 'content.real_pointer_prep', 'content.hover', 'content.drag'],
   allowScripts: ['content.execute_script'],
   allowUploads: ['content.upload_begin', 'content.upload_chunk', 'content.upload_finish'],
-  allowClipboard: ['content.copy_image', 'content.paste'],
+  allowClipboard: ['content.copy_image', 'content.paste', 'content.clipboard_fingerprint'],
   allowTabs: ['tabs.list', 'tabs.create', 'tabs.close', 'tabs.switch', 'tabs.move',
     'navigation.go_to_url', 'navigation.back', 'navigation.forward', 'navigation.reload'],
   allowWindows: ['windows.list', 'windows.get', 'windows.get_current', 'windows.create', 'windows.close',

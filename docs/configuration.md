@@ -333,7 +333,10 @@ normally: no remote control, no `navigator.webdriver`, nothing a page can see.
 
 - **Your pointer stays yours.** The messages carry their own position, so the
   mouse pointer on screen does not move and you can keep working in other windows.
-  The Firefox window may sit behind others, but not minimised.
+  The Firefox window may sit behind others, but not minimised. When the tab is not
+  showing, or no Firefox window with the page's title is at its spot, the action
+  falls back to scripted events: input never goes to another Firefox window that
+  happens to be there.
 - **The tab comes to the front of its window** before each real action, because
   input reaches only the tab showing in a window.
 - **Shortcuts work**: for a combination such as `Alt+2` or `Control+a` the server

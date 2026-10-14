@@ -1255,6 +1255,39 @@ async function handleContentAction(id, action, data) {
         break;
       }
 
+      // A hash of what is on the clipboard, never the contents, so the server
+      // can tell whether the agent's own copy is still there before it pastes.
+      // On Windows the server reads the clipboard's change counter instead.
+      case 'content.clipboard_fingerprint': {
+        const parts = [];
+        try {
+          for (const item of await navigator.clipboard.read()) {
+            for (const type of item.types) {
+              const blob = await item.getType(type);
+              parts.push(type, new Uint8Array(await blob.arrayBuffer()));
+            }
+          }
+        } catch (error) {
+          try {
+            parts.push('text', await navigator.clipboard.readText());
+          } catch (fallback) {
+            sendError(id, 'CLIPBOARD_ERROR', `Could not read the clipboard: ${fallback.message}`);
+            break;
+          }
+        }
+        const encoder = new TextEncoder();
+        const chunks = parts.map(part => typeof part === 'string' ? encoder.encode(part + ' ') : part);
+        const all = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+        let offset = 0;
+        for (const chunk of chunks) {
+          all.set(chunk, offset);
+          offset += chunk.length;
+        }
+        const digest = await crypto.subtle.digest('SHA-256', all);
+        sendResponse(id, action, { fingerprint: [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('') });
+        break;
+      }
+
       default:
         sendError(id, 'UNKNOWN_ACTION', `Unknown content action: ${action}`);
     }

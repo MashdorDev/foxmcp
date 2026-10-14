@@ -899,7 +899,8 @@ async function moveCursorToPoint(to, targetSize, press) {
 // (server/win_input.py): its top left in CSS pixels, the scale to physical
 // pixels, and the title Firefox gives the window
 function screenInfo() {
-  return { x: window.mozInnerScreenX, y: window.mozInnerScreenY, dpr: window.devicePixelRatio, title: document.title };
+  return { x: window.mozInnerScreenX, y: window.mozInnerScreenY, dpr: window.devicePixelRatio, title: document.title,
+    hidden: document.hidden };
 }
 
 // Between actions the cursor moves the way a hand resting on a mouse does.
