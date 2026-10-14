@@ -49,11 +49,8 @@ AGENT_CALL = contextvars.ContextVar('agent_call', default=None)
 MAX_STATUS_LENGTH = 80
 
 STATUS_DESCRIPTION = (
-    'Optional. A few words in the first person saying what you are doing, shown '
-    'to the person watching on the page, e.g. "Reading the board" or "Uploading '
-    'the new cover image". Keep the same line across the calls that make up one '
-    'step, and call tabs_release when you are done with a tab so the "AI agent '
-    'is working" overlay goes away.')
+    'A few words in the first person shown on the page while you work, e.g. '
+    '"Reading the board". Call tabs_release when done with the tab.')
 STATUS_TYPE = Annotated[Optional[str], Field(description=STATUS_DESCRIPTION)]
 
 
@@ -281,7 +278,8 @@ class FoxMCPTools:
         called it, so the tab can be released when that session ends.
         """
         signature = inspect.signature(fn)
-        if 'status' in signature.parameters:
+        # Only tools that act in a tab have a page to show the line on
+        if 'status' in signature.parameters or not ('tab_id' in signature.parameters or fn.__name__ == 'tabs_create'):
             return fn
 
         @functools.wraps(fn)
