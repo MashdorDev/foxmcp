@@ -176,10 +176,17 @@ class BidiSession:
         await self.command('input.releaseActions', {'context': context})
 
     async def type_text(self, context: str, text: str):
+        # A line break goes in as Shift+Enter: a plain Enter sends the message
+        # in chat boxes (Miro's comment reply posted the first line of a
+        # two-line text that way), while Shift+Enter adds a line everywhere
+        shift, enter = SPECIAL_KEYS['Shift'], SPECIAL_KEYS['Enter']
         steps = []
         for char in text:
-            value = SPECIAL_KEYS['Enter'] if char == '\n' else char
-            steps += [{'type': 'keyDown', 'value': value}, {'type': 'keyUp', 'value': value}]
+            if char == '\n':
+                steps += [{'type': 'keyDown', 'value': shift}, {'type': 'keyDown', 'value': enter},
+                          {'type': 'keyUp', 'value': enter}, {'type': 'keyUp', 'value': shift}]
+            else:
+                steps += [{'type': 'keyDown', 'value': char}, {'type': 'keyUp', 'value': char}]
         await self.keys(context, steps)
 
     async def press(self, context: str, combo: str):

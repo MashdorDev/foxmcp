@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Native tab groups: `tabs_group`, `tabs_ungroup`, `tabs_groups_update`, `tabs_groups_query`.** Group tabs, optionally with a title and colour; take them out again; restyle or collapse a group; and list groups with their IDs. None of them activates a tab or focuses a window. If the tabs are grouped but the title or colour cannot be set, `tabs_group` still reports the group and names what failed. Contributed by kernel-oops in [#8](https://github.com/ThinkerYzu/foxmcp/pull/8). Requires Firefox 139+, and the extension now asks for the `tabGroups` permission.
 
 ### Fixed
+- **Real typing puts a line break in as Shift+Enter.** A plain Enter sent the message in chat boxes: two lines typed into a Miro comment reply posted the first one.
 - **A failed step reaches the client as an error.** Tools reported failures as ordinary text ("Failed to type: ..."), which clients took for success. They now raise, so the client sees isError.
 - **Tools pass on the extension's reason.** 33 tools answered "Unable to ..." where the extension had said why.
 - **The tool list costs about 4,200 fewer tokens per session.** The status line is offered only on the 18 tools that act in a tab, with a shorter description.
