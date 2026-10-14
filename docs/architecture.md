@@ -86,6 +86,10 @@ The Firefox extension acts as a bridge between WebExtensions APIs and MCP client
 - **Error Handling**: Every tool checks for `error` in the response before reading data. A result that reads as a failure ("Failed to ...", "Unable to ...") is raised as a `ToolError`, so the client sees `isError` (`_failures_as_errors`)
 - **Status Line**: Tools that act in a tab get an optional `status` argument (`_with_status`), carried with every request the tool sends and shown on the page's overlay
 
+#### Real Input on Windows (`win_input.py`)
+- Posts mouse and key messages to the tab's Firefox window, found by where the page sits on screen and its title; Firefox makes trusted events of them, with no remote control and without moving the person's pointer
+- Holds modifier keys by setting the keyboard state of Firefox's input thread for the length of a combination
+
 #### Real Input (`bidi.py`)
 - A small WebDriver BiDi client: opens a session on Firefox's remote control port, finds the marked tab, and sends pointer and key actions through `input.performActions`
 - One short session per action, since Firefox allows one BiDi session at a time and several servers may share the browser
@@ -173,13 +177,17 @@ MCP tool call
 Firefox Extension
     ↓ (refusalFor: pause, permissions, blocked sites)
 Content Script
-    ↓ (moves the cursor, puts a one-time token on <html>, returns the target)
-Python Server (bidi.py)
-    ↓ (BiDi session on the remote control port, 9222-9229 or the one set)
-Firefox Remote Control
-    ↓ (finds the tab holding the token, performs the pointer or key actions)
+    ↓ (moves the cursor, puts a one-time token on <html>, returns the target
+    ↓  and where the page sits on screen)
+Python Server
+    ├─ Windows (win_input.py): posts mouse and key messages to the tab's window
+    └─ otherwise (bidi.py): BiDi session on the remote control port, finds the
+       tab holding the token, performs the pointer or key actions
 Page receives trusted events
 ```
+
+On Windows the background script first brings the tab to the front of its
+window, since window messages reach only the tab showing there.
 
 The prep step goes through the background script like any other action, so the
 person's settings apply to real input too. Each action opens its own BiDi session
@@ -187,7 +195,7 @@ and ends it. If no port answers, or the tab is not found, the tool falls back to
 the scripted action, and the server does not look for remote control on that
 browser again for 60 seconds. `content_drag` on a page's own HTML5 drag-and-drop
 stays scripted, because Firefox's remote control cannot drop. See
-[configuration.md](configuration.md#real-input-webdriver-bidi).
+[configuration.md](configuration.md#real-input).
 
 ## Security Architecture
 
@@ -209,7 +217,7 @@ Neither port authenticates local processes, which is deliberate: a process runni
 - **Broad Permissions**: The extension requests `tabs`, `tabGroups`, `history`, `bookmarks`, `activeTab`, `storage`, `clipboardRead`, `clipboardWrite`, `webRequest`, `webRequestBlocking`, and `<all_urls>`. `webRequestBlocking` is there for `filterResponseData`, which is the only way to read a response body and which Firefox grants only to an extension holding that permission; no listener blocks, cancels or rewrites a request. The set is deliberately wide (the extension exists to expose browser state), and it is the reason the server must stay on localhost. Treat an installed FoxMCP as granting its MCP client the same reach over the browser that you have.
 - **Sandboxing**: Content scripts run in the standard isolated content-script context
 - **The Person's Settings**: The add-on's settings page can pause the agent, turn off any of ten permission groups, block sites and keep it out of private windows. `refusalFor` in `background.js` enforces these for every action, real input included, so they hold whatever the MCP client asks
-- **Remote Control**: Real input needs Firefox started with `--remote-debugging-port`. While that port is open, any local program can drive Firefox through it, outside the add-on and its settings
+- **Remote Control**: Real input through BiDi needs Firefox started with `--remote-debugging-port`. While that port is open, any local program can drive Firefox through it, outside the add-on and its settings, and pages see `navigator.webdriver`. On Windows real input needs no port
 
 ### 3. Script Security
 

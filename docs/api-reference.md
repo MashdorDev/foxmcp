@@ -145,16 +145,18 @@ it, which keeps the tool list shorter.
 #### Real input
 
 `content_click`, `content_hover`, `content_drag`, `content_type` and
-`content_press_key` send real mouse and keyboard input through Firefox's remote
-control (WebDriver BiDi) when Firefox was started with
-`--remote-debugging-port` and real input is on in the add-on's settings. Pages
-cannot tell those events from a person's, so canvas apps and menus that ignore
-scripted events accept them. The result then ends in `(real input)`. When Firefox
-has no remote control, the same tools fall back to events dispatched by script.
+`content_press_key` send real mouse and keyboard input when real input is on in
+the add-on's settings: on Windows as messages to the tab's Firefox window, with
+no setup and without moving the person's pointer; otherwise through Firefox's
+remote control (WebDriver BiDi) when Firefox was started with
+`--remote-debugging-port`. Pages cannot tell those events from a person's, so
+canvas apps and menus that ignore scripted events accept them. The result then
+ends in `(real input)`. Without either, the same tools fall back to events
+dispatched by script.
 `content_drag` on a page's own HTML5 drag-and-drop (draggable elements, links,
 images) always uses the scripted drag, because Firefox's remote control starts
 that kind of drag but never drops. See
-[configuration.md](configuration.md#real-input-webdriver-bidi).
+[configuration.md](configuration.md#real-input).
 
 See [web-request-monitoring.md](web-request-monitoring.md) for the options, the
 pattern syntax, where captured data lives, and the full list of parameters that are

@@ -28,7 +28,7 @@ Code starts it in every session.
 **Register the server directly** (needs uv):
 
 ```bash
-claude mcp add firefox -- uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.8.1 mcp-bridge-for-firefox --stdio
+claude mcp add firefox -- uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.9.0 mcp-bridge-for-firefox --stdio
 ```
 
 `uvx` downloads the tagged release, installs it as a Python package (see
@@ -44,7 +44,7 @@ VS Code) take the same command:
   "mcpServers": {
     "firefox": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.8.1", "mcp-bridge-for-firefox", "--stdio"]
+      "args": ["--from", "git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.9.0", "mcp-bridge-for-firefox", "--stdio"]
     }
   }
 }
@@ -314,17 +314,43 @@ overrides `FOXMCP_ENABLE_TOOLS`, when both are given.
 - **WebSocket Port**: Default `8765` - Used for Firefox extension communication. A server that finds it taken uses the next free one of 8766 to 8769 (see [Several sessions](#several-sessions))
 - **MCP Port**: Default `3000` - Used for MCP client connections
 
-## Real input (WebDriver BiDi)
+## Real input
 
 Events an extension dispatches are untrusted, and pages that check ignore them:
-Miro's canvas and comment menus, and native context menus. When Firefox runs with
-its remote control on, `content_click`, `content_hover`, `content_drag`,
-`content_type` and `content_press_key` send real mouse and keyboard input through
-WebDriver BiDi instead, which a page cannot tell from a person's. Their results
-then end in `(real input)`. Without remote control, or when it cannot reach the
-tab, the same tools fall back to events dispatched by script.
+Miro's canvas and comment menus, and native context menus. `content_click`,
+`content_hover`, `content_drag`, `content_type` and `content_press_key` send real
+mouse and keyboard input instead, which a page cannot tell from a person's. Their
+results then end in `(real input)`. There are two ways it gets there, tried in
+this order, and when neither reaches the tab the same tools fall back to events
+dispatched by script.
 
-### Starting Firefox with remote control
+### On Windows: window messages
+
+On Windows nothing has to be set up. The server posts the mouse and key messages
+to the Firefox window holding the tab (`server/win_input.py`), and Firefox turns
+them into trusted events as it does for a real mouse and keyboard. Firefox runs
+normally: no remote control, no `navigator.webdriver`, nothing a page can see.
+
+- **Your pointer stays yours.** The messages carry their own position, so the
+  mouse pointer on screen does not move and you can keep working in other windows.
+  The Firefox window may sit behind others, but not minimised.
+- **The tab comes to the front of its window** before each real action, because
+  input reaches only the tab showing in a window.
+- **Shortcuts work**: for a combination such as `Alt+2` or `Control+a` the server
+  sets the modifier keys on Firefox's input thread for the length of the
+  combination.
+- **Emoji are the exception.** Firefox drops characters outside the Basic
+  Multilingual Plane that arrive as window messages, so text containing them goes
+  through remote control when it is on, or is typed by script.
+- If your own pointer is over the Firefox window, its moves reach the page too,
+  which can close a hover menu the agent opened.
+
+### Elsewhere: remote control (WebDriver BiDi)
+
+On macOS and Linux, and on Windows when the window is not found, real input goes
+through Firefox's remote control.
+
+#### Starting Firefox with remote control
 
 Start Firefox with `--remote-debugging-port=PORT`. For a profile you open from a
 shortcut, add the flag to the shortcut's target:
@@ -337,7 +363,7 @@ If another Firefox is already running on the computer, add `-no-remote` as well.
 Without it the running Firefox opens the profile through its profile switcher and
 drops the flag, and the new window has no remote control.
 
-### How the server finds it
+#### How the server finds it
 
 The server finds the port by itself. It tries 9222 to 9229, the ports remote
 control usually listens on (`LIKELY_PORTS` in `server/bidi.py`), and remembers the
@@ -363,7 +389,7 @@ do](#what-the-agent-may-do). The content script's preparation step is an ordinar
 request, refused like any other while the agent is paused, when "Click, type and
 press keys" is off, or on a blocked site.
 
-### What remote control changes in Firefox
+#### What remote control changes in Firefox
 
 With remote control on, Firefox applies Mozilla's recommended automation
 preferences to the profile, which among other things turn session restore off. To
@@ -376,7 +402,10 @@ user_pref("remote.prefs.recommended", false);
 
 **While the port is open, any program on this computer can drive Firefox through
 it**, signed-in sessions included, and the add-on's settings do not cover those
-programs. Turn remote control on only for profiles where that is acceptable.
+programs. Every page can also tell the browser is remote controlled
+(`navigator.webdriver` is true), and sites with bot checks act on it; ChatGPT
+showed a Cloudflare check. On Windows, leave the flag out: window messages need
+none of this.
 
 ### Limits
 
@@ -455,7 +484,12 @@ default.
 
 The agent's cursor can be hidden. Its movement is "Like a hand" (a slight curve
 and a small correction at the end) or "Direct", and its speed is slow, normal or
-fast; slower moves make each click and keystroke take longer. With "Show text
+fast; slower moves make each click and keystroke take longer. "Move the cursor
+like a resting hand" (on by default) keeps it alive between actions: it mostly
+stays put, now and then drifts a few pixels, and while the agent reads it follows
+the lines and sweeps back to the start of the next, the way pointers move during
+reading and search (Rodden et al., CHI 2008; Huang, White and Buscher, CHI 2012).
+Only the drawn cursor moves; the page gets no mouse events from it. With "Show text
 being typed in" off, text goes in at once, which is faster.
 
 The toolbar button shows "off" when no server is connected, "stop" when the agent
@@ -469,7 +503,7 @@ the button" turns that off.
 server's, `localhost` and `8765` by default. "Other sessions" is how many ports
 after that one the add-on scans for more sessions, 4 by default (see [Several
 sessions](#several-sessions)). Real input is described
-[above](#real-input-webdriver-bidi). Under Reconnecting: "Retry every" (1000 to
+[above](#real-input). Under Reconnecting: "Retry every" (1000 to
 60000 ms, 5000 by default), "Give up after" (-1 keeps trying for as long as
 Firefox is open), and the ping timeout. A Reconnect button dials the server again.
 
@@ -563,7 +597,7 @@ To keep profiles fully apart instead, give each its own port in the options page
 and run one server per port, each as its own MCP entry:
 
 ```bash
-claude mcp add firefox-work -- uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.8.1 mcp-bridge-for-firefox --stdio --port 8775
+claude mcp add firefox-work -- uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.9.0 mcp-bridge-for-firefox --stdio --port 8775
 ```
 
 Pick a port outside 8765 to 8769, which the first entry's sessions use (see
