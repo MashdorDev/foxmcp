@@ -20,18 +20,20 @@ import subprocess
 import time
 import json
 import base64
+import tempfile
 from datetime import datetime
 from typing import Annotated, Dict, Any, Optional, List, TypedDict, Union
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.utilities.types import Image
 
 try:
     from .bidi import LIKELY_PORTS, BidiSession, BidiUnavailable, listening_ports
-    from .win_input import AVAILABLE as WINDOW_INPUT, WindowInput, WindowInputUnavailable
+    from .win_input import AVAILABLE as WINDOW_INPUT, WindowInput, WindowInputUnavailable, clipboard_sequence
 except ImportError:
     from bidi import LIKELY_PORTS, BidiSession, BidiUnavailable, listening_ports
-    from win_input import AVAILABLE as WINDOW_INPUT, WindowInput, WindowInputUnavailable
+    from win_input import AVAILABLE as WINDOW_INPUT, WindowInput, WindowInputUnavailable, clipboard_sequence
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -55,6 +57,16 @@ UPLOAD_CHUNK_BYTES = 512 * 1024
 AGENT_CALL = contextvars.ContextVar('agent_call', default=None)
 
 # How a tool's text result reads when the tool failed
+# Key combinations that copy to or paste from the system clipboard
+COPY_KEYS = re.compile(r"^(control|ctrl|meta|command)\+(c|x|insert)$", re.IGNORECASE)
+PASTE_KEYS = re.compile(r"^((control|ctrl|meta|command)(\+shift)?\+v|shift\+insert)$", re.IGNORECASE)
+# How long an app may take to put a copy on the clipboard after the keys
+COPY_WAIT_S = 1.5
+
+# Where a screenshot given a bare file name is saved, rather than wherever the
+# server happens to run from (a client's project folder)
+SCREENSHOT_DIR = os.path.join(tempfile.gettempdir(), "mcp-bridge-for-firefox", "screenshots")
+
 FAILURE_RESULT = re.compile(r"(Failed to|Unable to|Error |Unexpected error|Window \S+ not found)")
 
 # The overlay label is one line; a status longer than this is cut.
@@ -1167,23 +1179,19 @@ class FoxMCPTools:
             window_id: Optional[int] = None,
             format: str = "png",
             quality: int = 90
-        ) -> str:
+        ) -> Union[str, Image]:
             """Capture a screenshot of the visible tab
 
-            What comes back depends on whether you pass a filename: with one, the image is
-            written to disk and you get a success message and the path; without one, you get
-            the image inline as a base64 data URL, which for a full window is large.
+            Without a filename the image comes back to you to look at. With one it
+            is saved to disk and you get the full path; a bare name is saved in the
+            system's temporary folder, not in the current directory.
 
             Args:
-                filename: Name of the file to save the screenshot (optional, if not provided returns base64)
+                filename: File to save the screenshot to (optional)
                 window_id: ID of the window to capture (optional, defaults to current window)
-                format: Image format ('png' or 'jpeg', default: 'png')
+                format: Image format ('png' or 'jpeg', default: 'png'); jpeg is much
+                    smaller to look at
                 quality: Image quality for JPEG format (1-100, default: 90)
-
-            Returns:
-                Success message with file path if filename provided, otherwise base64 encoded image data URL
-
-                Not exposed to clients — see the description above.
             """
             request = {
                 "id": str(uuid.uuid4()),
@@ -1225,6 +1233,9 @@ class FoxMCPTools:
                         if not filename.lower().endswith(('.png', '.jpg', '.jpeg')):
                             filename = f"{filename}.{captured_format}"
 
+                        if not os.path.isabs(filename):
+                            os.makedirs(SCREENSHOT_DIR, exist_ok=True)
+                            filename = os.path.join(SCREENSHOT_DIR, filename)
                         # Decode base64 and save to file
                         image_data = base64.b64decode(base64_data)
                         with open(filename, 'wb') as f:
@@ -1237,9 +1248,9 @@ class FoxMCPTools:
                         return f"Error saving screenshot to file '{filename}': {str(e)}"
 
                 else:
-                    # Return base64 data as before when no filename provided
-                    data_size = len(base64_data)
-                    return f"Screenshot captured successfully from window {captured_window_id} ({captured_format}, quality: {captured_quality}):\n{data_url[:100]}...\n\nBase64 data size: {data_size} characters"
+                    # The image itself, which a client shows to the model; a
+                    # data URL in text was cut short and could not be looked at
+                    return Image(data=base64.b64decode(base64_data), format=captured_format)
 
             elif response.get("type") == "error":
                 error_msg = response.get("data", {}).get("message", "Unknown error")
@@ -2101,6 +2112,41 @@ class FoxMCPTools:
                 raise ValueError("Pass either ref (from content_snapshot) or selector")
             return {"tabId": tab_id, "ref": ref, "selector": selector}
 
+        clipboard = {"agent": None}
+
+        async def clipboard_stamp():
+            """Something that changes whenever the clipboard does, without the
+            contents: Windows' change counter, or elsewhere a hash from the add-on"""
+            if WINDOW_INPUT:
+                return clipboard_sequence()
+            data, error = await page_request({"action": "content.clipboard_fingerprint", "data": {}})
+            return None if error else data.get("fingerprint")
+
+        async def note_copy(before) -> str:
+            """After keys that copy: wait for the app to fill the clipboard and
+            remember it as the agent's, or say nothing was copied"""
+            deadline = time.monotonic() + COPY_WAIT_S
+            while time.monotonic() < deadline:
+                now = await clipboard_stamp()
+                if now is not None and now != before:
+                    clipboard["agent"] = now
+                    return ". The clipboard now holds the copy"
+                await asyncio.sleep(0.15)
+            return ". Nothing was copied: the clipboard did not change"
+
+        async def paste_refusal(allow_clipboard: bool) -> Optional[str]:
+            """A paste only puts on the page what the agent itself copied. What
+            else is on the clipboard is the person's (a message, a password, an
+            address), and pasting it onto a page, often a shared one, leaks it."""
+            if allow_clipboard:
+                return None
+            now = await clipboard_stamp()
+            if now is not None and now == clipboard["agent"]:
+                return None
+            return ("Failed to paste: the clipboard holds something the agent did not copy, most likely the "
+                    "person's own. Copy what you mean to paste first (Control+c on it, or content_copy_image), "
+                    "or pass allow_clipboard=true only if the person asked to paste their clipboard")
+
         # Snapshot Tool
         @self._tool()
         async def content_snapshot(tab_id: int, max_elements: int = 300) -> str:
@@ -2323,10 +2369,16 @@ class FoxMCPTools:
         # Press Key Tool
         @self._tool()
         async def content_press_key(
-            tab_id: int, key: str, ref: Optional[str] = None, selector: Optional[str] = None
+            tab_id: int, key: str, ref: Optional[str] = None, selector: Optional[str] = None,
+            allow_clipboard: bool = False
         ) -> str:
             """Press a key such as "Enter", "Escape" or "Tab" on an element, or on
             the focused element when no target is given
+
+            Copy keys (Control+c, Control+x) report whether anything was copied.
+            Paste keys (Control+v, Shift+Insert) go through only while the
+            clipboard holds what the agent copied, so the person's own clipboard
+            never lands on a page by accident.
 
             Args:
                 tab_id: ID of the tab
@@ -2334,7 +2386,16 @@ class FoxMCPTools:
                     combination such as "Control+a" or "Shift+Tab"
                 ref: Element ref from content_snapshot
                 selector: CSS selector, used when no ref is given
+                allow_clipboard: Paste even though the clipboard holds something
+                    the agent did not copy. Only when the person asked to paste
+                    their own clipboard (default: False)
             """
+            if PASTE_KEYS.match(key):
+                refusal = await paste_refusal(allow_clipboard)
+                if refusal:
+                    return refusal
+            copy_before = await clipboard_stamp() if COPY_KEYS.match(key) else None
+
             async def press_for_real(bidi, context, element):
                 if element:
                     await bidi.click(context, element)
@@ -2345,14 +2406,16 @@ class FoxMCPTools:
                 prep, error = real
                 if error:
                     return f"Failed to press {key}: {error}"
-                return f"Pressed {key} (real input)"
+                copied = await note_copy(copy_before) if COPY_KEYS.match(key) else ""
+                return f"Pressed {key} (real input){copied}"
             data, error = await page_request({
                 "action": "content.press_key",
                 "data": {"tabId": tab_id, "key": key, "ref": ref, "selector": selector}
             })
             if error:
                 return f"Failed to press {key}: {error}"
-            return f"Pressed {data.get('pressed')}"
+            copied = await note_copy(copy_before) if COPY_KEYS.match(key) else ""
+            return f"Pressed {data.get('pressed')}{copied}"
 
         # Upload Files Tool
         @self._tool()
@@ -2467,7 +2530,8 @@ class FoxMCPTools:
         # Paste Tool
         @self._tool()
         async def content_paste(
-            tab_id: int, ref: Optional[str] = None, selector: Optional[str] = None
+            tab_id: int, ref: Optional[str] = None, selector: Optional[str] = None,
+            allow_clipboard: bool = False
         ) -> str:
             """Paste what is on the system clipboard into a page, as Ctrl+V would
 
@@ -2481,7 +2545,13 @@ class FoxMCPTools:
                 tab_id: ID of the tab
                 ref: Ref of a textarea from content_snapshot to paste into
                 selector: CSS selector, used when no ref is given
+                allow_clipboard: Paste even though the clipboard holds something
+                    the agent did not copy. Only when the person asked to paste
+                    their own clipboard (default: False)
             """
+            refusal = await paste_refusal(allow_clipboard)
+            if refusal:
+                return refusal
             data, error = await page_request({
                 "action": "content.paste",
                 "data": {"tabId": tab_id, "ref": ref, "selector": selector}

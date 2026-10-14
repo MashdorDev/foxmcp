@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **The person's clipboard stays theirs.** Paste keys and `content_paste` go through only while the clipboard holds what the agent itself copied; otherwise they fail and say why. Copy keys report whether anything was copied. On Windows the server compares the clipboard's change counter, which never reveals the contents; elsewhere the add-on compares a hash. A failed copy followed by a paste had put the person's own messages on a shared Miro board. `allow_clipboard=True` pastes the person's clipboard when they ask for it.
+
+### Changed
+- `tabs_capture_screenshot` without a filename returns the image itself instead of a cut-off data URL, and a bare filename is saved in the temporary folder instead of the server's working folder.
+
+### Fixed
+- Real input on Windows could go to another Firefox window at the same spot when the tab's own window was not found, and reported success when the tab was not showing. It now requires a window showing the page's title and a showing tab, and otherwise falls back to scripted events.
+
 ## [1.10.0] - 2026-10-14
 
 ### Added

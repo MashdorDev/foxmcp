@@ -57,8 +57,9 @@ it, which keeps the tool list shorter.
 - `tabs_groups_update(group_id, title=None, color=None, collapsed=None)` - Change a group's title, colour or collapsed state
 - `tabs_groups_query(window_id=None, title=None, color=None, collapsed=None)` - List tab groups and their IDs
 - `tabs_capture_screenshot(filename=None, window_id=None, format="png", quality=90)` - Capture screenshot of visible tab
-  - If `filename` provided: saves screenshot to file and returns success message
-  - If `filename` omitted: returns base64 encoded image data URL
+  - Without `filename` the image itself comes back, for the client to show the model
+  - With `filename` it is saved and the result gives the full path; a bare name goes
+    to `<temp>/mcp-bridge-for-firefox/screenshots/`, not the server's working folder
   - Automatically adds file extension (.png/.jpeg) if not provided
 
 ### History Operations
@@ -107,13 +108,19 @@ it, which keeps the tool list shorter.
   - Checks afterwards that the whole text arrived, and reports a short result as an error
   - Under real input a line break is typed as Shift+Enter, which adds a line in chat
     boxes where a plain Enter would send the message
-- `content_press_key(tab_id, key, ref=None, selector=None)` - Press a key on an element, or on the focused one
+- `content_press_key(tab_id, key, ref=None, selector=None, allow_clipboard=False)` - Press a key on an element, or on the focused one
+  - Copy keys (`Control+c`, `Control+x`) say whether anything reached the clipboard
+  - Paste keys (`Control+v`, `Shift+Insert`) go through only while the clipboard holds
+    what the agent copied, so the person's own clipboard (a message, a password) never
+    lands on a page by accident. `allow_clipboard=True` pastes it anyway, for when the
+    person asked
   - `key` is a `KeyboardEvent.key` name such as `"Enter"`, `"Escape"` or `"Tab"`;
     under real input it can also be a combination such as `"Control+a"` or `"Shift+Tab"`
 - `content_upload_files(tab_id, path, ref=None, selector=None, trigger_ref=None, trigger_selector=None)` - Put a local file or folder on a file input; a trigger fills the input a button would open
 - `content_copy_image(tab_id=None, ref=None, selector=None, path=None)` - Put an image on the system clipboard as PNG, as the browser's "Copy Image" does
   - An image on a page (`tab_id` with `ref` or `selector`), or a local image file (`path`)
-- `content_paste(tab_id, ref=None, selector=None)` - Paste the system clipboard into a page, as Ctrl+V would
+- `content_paste(tab_id, ref=None, selector=None, allow_clipboard=False)` - Paste the system clipboard into a page, as Ctrl+V would
+  - The same guard as the paste keys: only what the agent copied, unless `allow_clipboard`
   - The page gets a real paste event carrying the clipboard's text or image. Firefox
     lets the extension paste only into a textarea; with no target, or another kind,
     the paste goes to the page as a whole
