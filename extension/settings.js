@@ -42,13 +42,19 @@ const SETTINGS_DEFAULTS = {
   badgeEnabled: true,
   browserName: '',
   extraServerPorts: 4,
+  // Real (trusted) clicks and keys through WebDriver BiDi, when Firefox was
+  // started with --remote-debugging-port. The server finds the port; set
+  // realInputPort only for one outside 9222-9229 (0: find it)
+  realInput: true,
+  realInputPort: 0,
 };
 
 // Which permission each action needs. Actions not listed (ping, tabs.release,
 // the test suite's helpers) are always allowed.
 const ACTION_PERMISSIONS = {
   allowRead: ['content.get_text', 'content.get_html', 'content.snapshot', 'tabs.captureVisibleTab'],
-  allowInteract: ['content.click', 'content.type', 'content.press_key', 'content.capture_file_input'],
+  allowInteract: ['content.click', 'content.type', 'content.press_key', 'content.capture_file_input',
+    'content.real_input_prep', 'content.check_typed'],
   allowScripts: ['content.execute_script'],
   allowUploads: ['content.upload_begin', 'content.upload_chunk', 'content.upload_finish'],
   allowClipboard: ['content.copy_image', 'content.paste'],

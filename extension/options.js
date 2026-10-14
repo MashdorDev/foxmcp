@@ -88,6 +88,10 @@ async function saveSetting(input) {
   else if (input.type === 'number') value = checkedNumber(input);
   else value = input.value.trim();
   if (value === null) return;
+  if (key === 'realInputPort' && value && value === Number($('port').value)) {
+    setError(key, `${value} is the bridge server's port (under Connection). Use the port Firefox was started with, such as 9223.`);
+    return;
+  }
   if (key === 'browserName') value = value.slice(0, 60);
   await browser.storage.local.set({ [key]: value });
   toast('Saved');
@@ -123,6 +127,10 @@ async function saveConnection() {
   const hostname = $('hostname').value.trim();
   setError('hostname', hostname ? '' : 'Enter a host, such as localhost');
   const port = checkedNumber($('port'));
+  if (port !== null && port === Number($('realInputPort').value)) {
+    setError('port', `${port} is Firefox's remote control port (under Real input). The bridge server is usually 8765.`);
+    return;
+  }
   if (!hostname || port === null) return;
   await browser.storage.local.set({ hostname, port });
   await browser.runtime.sendMessage({ type: 'configUpdated', config: { hostname, port } });

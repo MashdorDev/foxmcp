@@ -131,13 +131,14 @@ const SLOW_RETRY_INTERVAL = 30000;
 // several Firefox profiles apart. Kept in storage.local, never storage.sync:
 // Firefox Sync would copy a synced id or name to every profile on the account.
 async function browserIdentity() {
-  const stored = await browser.storage.local.get({ instanceId: '', browserName: '' });
+  const stored = await browser.storage.local.get({ instanceId: '', browserName: '', realInput: true, realInputPort: 0 });
   let instanceId = stored.instanceId;
   if (!instanceId) {
     instanceId = crypto.randomUUID();
     await browser.storage.local.set({ instanceId });
   }
-  return { instance_id: instanceId, name: stored.browserName, version: browser.runtime.getManifest().version };
+  return { instance_id: instanceId, name: stored.browserName, version: browser.runtime.getManifest().version,
+    real_input: Boolean(stored.realInput), real_input_port: Number(stored.realInputPort) || 0 };
 }
 
 async function sendHello(socket) {
@@ -152,7 +153,11 @@ async function sendHello(socket) {
 }
 
 browser.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes.browserName) sendHello(websocket);
+  // Every server this browser is connected to learns its new name or real-input port
+  if (area === 'local' && (changes.browserName || changes.realInput || changes.realInputPort)) {
+    sendHello(websocket);
+    for (const socket of extraSockets.values()) sendHello(socket);
+  }
 });
 
 function connectToMCPServer() {
@@ -982,6 +987,8 @@ const AGENT_ACTIVITY = {
   'content.upload_finish': ['waiting', 'Uploading a file'],
   'content.copy_image': ['reading', 'Copying an image'],
   'content.paste': ['typing', 'Pasting'],
+  'content.real_input_prep': ['clicking', 'Clicking'],
+  'content.check_typed': ['typing', 'Typing'],
   'navigation.go_to_url': ['waiting', 'Opening a page'],
   'navigation.back': ['waiting', 'Going back'],
   'navigation.forward': ['waiting', 'Going forward'],
@@ -1129,6 +1136,8 @@ async function handleContentAction(id, action, data) {
         }
         break;
 
+      case 'content.real_input_prep':
+      case 'content.check_typed':
       case 'content.snapshot':
       case 'content.click':
       case 'content.type':
@@ -1136,7 +1145,8 @@ async function handleContentAction(id, action, data) {
       case 'content.capture_file_input': {
         const pageAction = { 'content.snapshot': 'snapshot', 'content.click': 'click',
           'content.type': 'type', 'content.press_key': 'pressKey',
-          'content.capture_file_input': 'captureFileInput' }[action];
+          'content.capture_file_input': 'captureFileInput', 'content.real_input_prep': 'realInputPrep',
+          'content.check_typed': 'checkTypedText' }[action];
         const pageResult = await sendMessageWithRetry(data.tabId, { action: pageAction, data });
         if (pageResult && pageResult.error) {
           sendError(id, 'PAGE_ERROR', pageResult.error);
