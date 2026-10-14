@@ -61,7 +61,10 @@ async function render() {
     return item;
   }));
 
-  const { followAgent, paused } = await loadSettings();
+  const { followAgent, paused, realInput, realInputPort } = await loadSettings();
+  $('realInput').textContent = !realInput ? 'Real input: off'
+    : realInputPort ? `Real input: on, remote control port ${realInputPort}`
+    : 'Real input: not set up (Settings)';
   $('followAgent').checked = followAgent;
   $('paused').checked = paused;
   $('pausedNote').hidden = !paused;

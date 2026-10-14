@@ -32,6 +32,9 @@ logger = logging.getLogger(__name__)
 TAB_TOKEN_ATTR = 'data-foxmcp-tab'
 CONNECT_TIMEOUT = 3.0
 COMMAND_TIMEOUT = 30.0
+# A Firefox still restoring its tabs can take a while to open a session
+SESSION_TIMEOUT = 15.0
+LATE_SESSION_WAIT = 120.0
 # Keys per performActions call, so a long text does not become one huge message
 KEYS_PER_BATCH = 200
 
@@ -68,11 +71,29 @@ class BidiSession:
         except (OSError, asyncio.TimeoutError, websockets.WebSocketException) as error:
             raise BidiUnavailable(f'Firefox is not accepting real input on port {self.port}: {error}')
         try:
-            await self.command('session.new', {'capabilities': {}})
+            await self.command('session.new', {'capabilities': {}}, timeout=SESSION_TIMEOUT)
+        except asyncio.TimeoutError:
+            # Firefox may still create the session after we stop waiting, and
+            # it allows only one: it would be stuck until Firefox restarts. So
+            # the reply is still awaited, and the session ended, in the background.
+            asyncio.create_task(self._end_late_session())
+            raise BidiUnavailable("Firefox's remote control did not answer in time")
         except Exception:
             await self.ws.close()
             raise
         return self
+
+    async def _end_late_session(self):
+        try:
+            while True:
+                message = json.loads(await asyncio.wait_for(self.ws.recv(), LATE_SESSION_WAIT))
+                if message.get('type') == 'success' and 'sessionId' in message.get('result', {}):
+                    await self.command('session.end', {})
+                    break
+        except Exception:
+            pass
+        finally:
+            await self.ws.close()
 
     async def __aexit__(self, *exc):
         try:
@@ -81,11 +102,11 @@ class BidiSession:
             pass
         await self.ws.close()
 
-    async def command(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def command(self, method: str, params: Dict[str, Any], timeout: float = COMMAND_TIMEOUT) -> Dict[str, Any]:
         command_id = next(self._ids)
         await self.ws.send(json.dumps({'id': command_id, 'method': method, 'params': params}))
         while True:
-            message = json.loads(await asyncio.wait_for(self.ws.recv(), COMMAND_TIMEOUT))
+            message = json.loads(await asyncio.wait_for(self.ws.recv(), timeout))
             if message.get('id') != command_id:
                 continue  # an event, or an older reply
             if message.get('type') == 'error':
