@@ -831,9 +831,10 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         break;
       }
 
-      // Before real input from WebDriver BiDi (server/bidi.py): move the cursor
-      // there, and mark the page so the server can find this tab among BiDi's
-      // browsing contexts, whose ids are unrelated to the extension's tab ids.
+      // Before real input (server/win_input.py or bidi.py): move the cursor
+      // there, say where the page is on screen, and mark the page so the server
+      // can find this tab among BiDi's browsing contexts, whose ids are
+      // unrelated to the extension's tab ids.
       case 'realInputPrep': {
         const el = data.ref || data.selector ? findTarget(data) : null;
         showOverlay(data.purpose === 'type' ? 'typing' : 'clicking');
@@ -845,7 +846,11 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         (el ? moveCursorTo(el, data.purpose === 'click') : Promise.resolve())
           .then(() => {
             document.documentElement.setAttribute('data-foxmcp-tab', data.token);
-            sendResponse(el ? { selector: `[${REF_ATTR}="${refFor(el)}"]`, target: describe(el) } : { target: 'the page' });
+            const rect = el && el.getBoundingClientRect();
+            sendResponse(el ? {
+              selector: `[${REF_ATTR}="${refFor(el)}"]`, target: describe(el), screen: screenInfo(),
+              point: { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) },
+            } : { target: 'the page', screen: screenInfo() });
           })
           .catch(error => sendResponse({ error: error.message }));
         break;
@@ -874,7 +879,7 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         break;
       }
 
-      // Points for a real (BiDi) hover, point click or drag: the cursor moves to
+      // Points for a real hover, point click or drag: the cursor moves to
       // the start, and the server gets viewport coordinates to send to Firefox
       case 'realPointerPrep': {
         try {
@@ -889,6 +894,7 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 from: { x: Math.round(from.x), y: Math.round(from.y) },
                 to: to && { x: Math.round(to.x), y: Math.round(to.y) },
                 target: describe(from.el) + (to ? ` to ${describe(to.el)}` : ''),
+                screen: screenInfo(),
                 // Firefox's remote control starts the page's drag-and-drop but
                 // cannot drop, so those drags are scripted (see content_drag)
                 pageDragAndDrop: data.purpose === 'drag' && usesPageDragAndDrop(from.el),

@@ -1154,6 +1154,8 @@ async function handleContentAction(id, action, data) {
           'content.capture_file_input': 'captureFileInput', 'content.real_input_prep': 'realInputPrep',
           'content.check_typed': 'checkTypedText', 'content.real_pointer_prep': 'realPointerPrep',
           'content.hover': 'hover', 'content.drag': 'drag' }[action];
+        // Real input posted to the window lands in the tab showing in it
+        if (data.activate) await browser.tabs.update(data.tabId, { active: true });
         const pageResult = await sendMessageWithRetry(data.tabId, { action: pageAction, data });
         if (pageResult && pageResult.error) {
           sendError(id, 'PAGE_ERROR', pageResult.error);

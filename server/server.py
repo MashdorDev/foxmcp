@@ -266,6 +266,11 @@ class FoxMCPServer:
             browser.real_input_found = port
             browser.real_input_missed_at = 0.0 if port else time.time()
 
+    def real_input_enabled(self) -> bool:
+        """Whether the person allows real input in this browser at all"""
+        browser = self.browsers.get(self.active_browser)
+        return bool(browser and browser.real_input)
+
     def real_input_allowed(self) -> bool:
         """Whether to try real input now: the person allows it, and it was not
         just looked for in vain (a profile started without remote control
