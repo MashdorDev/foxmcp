@@ -159,6 +159,7 @@ function connectToMCPServer() {
     socket.onopen = () => {
       console.log('Connected to MCP server');
       isConnected = true;
+      updateBadge();
       retryAttempts = 0; // Reset retry counter on successful connection
       connectionRetryAttempts = 0; // Reset connection retry counter
       sendHello(socket).catch(error => console.error('Could not send hello:', error));
@@ -190,6 +191,7 @@ function connectToMCPServer() {
 
       console.log('Disconnected from MCP server');
       isConnected = false;
+      updateBadge();
       clearAllMonitors('the connection to the server dropped');
       releaseAgentTabsOf(socket);
       scheduleReconnect();
@@ -232,12 +234,14 @@ function connectExtraServer(port) {
     extraSockets.set(port, socket);
     socket.onopen = () => {
       console.log(`Connected to an additional MCP server on port ${port}`);
+      updateBadge();
       sendHello(socket).catch(error => console.error('Could not send hello:', error));
       settled();
     };
     socket.onmessage = async (event) => handleMessage(JSON.parse(event.data), socket);
     socket.onclose = () => {
       if (extraSockets.get(port) === socket) extraSockets.delete(port);
+      updateBadge();
       releaseAgentTabsOf(socket);
       settled();
     };
@@ -471,6 +475,41 @@ function sendError(id, code, message, details = {}) {
   socket.send(JSON.stringify(errorMessage));
 }
 
+// The toolbar button says how things stand without opening the popup: "off"
+// when no server is connected, otherwise how many tabs an agent is working in.
+function updateBadge() {
+  const extra = [...extraSockets.values()].filter(socket => socket.readyState === WebSocket.OPEN).length;
+  const servers = (isConnected ? 1 : 0) + extra;
+  if (!servers) {
+    browser.browserAction.setBadgeText({ text: 'off' });
+    browser.browserAction.setBadgeBackgroundColor({ color: '#8f8f9d' });
+    browser.browserAction.setTitle({ title: 'MCP Bridge for Firefox: not connected' });
+    return;
+  }
+  browser.browserAction.setBadgeText({ text: agentTabs.size ? String(agentTabs.size) : '' });
+  browser.browserAction.setBadgeBackgroundColor({ color: '#d97757' });
+  browser.browserAction.setTitle({ title: `MCP Bridge for Firefox: ${servers} session${servers > 1 ? 's' : ''}` +
+    (agentTabs.size ? `, agent working in ${agentTabs.size} tab${agentTabs.size > 1 ? 's' : ''}` : '') });
+}
+
+// What the popup shows: the servers this browser is connected to and the
+// tabs an agent is working in
+async function connectionDetails() {
+  const browserName = (await browser.storage.local.get({ browserName: '' })).browserName;
+  const tabs = await Promise.all([...agentTabs].map(([tabId, entry]) =>
+    browser.tabs.get(tabId)
+      .then(tab => ({ tabId, title: tab.title || tab.url, label: entry.label, state: entry.state }))
+      .catch(() => null)));
+  return {
+    connected: isConnected,
+    retryAttempts,
+    config: CONFIG,
+    browserName,
+    extraPorts: [...extraSockets].filter(([, socket]) => socket.readyState === WebSocket.OPEN).map(([port]) => port),
+    agentTabs: tabs.filter(Boolean),
+  };
+}
+
 // Handle popup requests for connection status
 browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
@@ -483,11 +522,12 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'getConnectionStatus') {
-    sendResponse({
-      connected: isConnected,
-      retryAttempts: retryAttempts,
-      config: CONFIG
-    });
+    connectionDetails().then(sendResponse);
+    return true;
+  }
+
+  if (request.action === 'releaseAgentTab') {
+    sendResponse({ released: releaseAgentTab(request.tabId) });
     return true;
   }
 
@@ -904,6 +944,7 @@ async function markAgentActive(tabId, { state = 'working', label = null, agentSt
     agentStatus: agentStatus || (state === 'thinking' && previous ? previous.agentStatus : null),
     at: Date.now()
   });
+  if (!previous) updateBadge();
   sendAgentState(tabId);
   // "Follow the agent" brings forward whichever tab the agent acts in next
   if (state !== 'thinking') {
@@ -914,6 +955,7 @@ async function markAgentActive(tabId, { state = 'working', label = null, agentSt
 
 function releaseAgentTab(tabId) {
   if (!agentTabs.delete(tabId)) return false;
+  updateBadge();
   browser.tabs.sendMessage(tabId, { action: 'agentRelease' }).catch(() => {});
   return true;
 }
@@ -939,7 +981,9 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
   else sendAgentState(tabId);
 });
 
-browser.tabs.onRemoved.addListener(tabId => agentTabs.delete(tabId));
+browser.tabs.onRemoved.addListener(tabId => {
+  if (agentTabs.delete(tabId)) updateBadge();
+});
 
 // Helper function to send message with retry logic for content script
 async function sendMessageWithRetry(tabId, message, maxRetries = 5, delayMs = 2000) {
@@ -2469,6 +2513,7 @@ console.log('🚀 Extension starting - loading configuration...');
 
 // Initialize extension: load config then connect
 async function initializeExtension() {
+  updateBadge();
   try {
     console.log('🚀 Initializing extension...');
 

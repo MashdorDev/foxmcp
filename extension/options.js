@@ -1,239 +1,138 @@
-// Options page script for FoxMCP extension configuration
+/*
+ * MCP Bridge for Firefox - options page
+ * Licensed under the MIT License - see LICENSE file for details
+ *
+ * Every field saves as it changes. Name, follow, host and port are per profile
+ * (storage.local), since Firefox Sync would copy synced values to every
+ * profile on the account; the retry settings stay in storage.sync, where older
+ * versions kept them. Test overrides (testPort/testHostname, set by the test
+ * suite) win over the saved host and port, and the page says so.
+ */
 
-document.addEventListener('DOMContentLoaded', function() {
-    // Load saved settings
-    loadSettings();
+const $ = id => document.getElementById(id);
 
-    // Update WebSocket URL when hostname or port changes
-    document.getElementById('hostname').addEventListener('input', updateWebSocketUrl);
-    document.getElementById('port').addEventListener('input', updateWebSocketUrl);
+const DEFAULTS = {
+  local: { hostname: 'localhost', port: 8765, browserName: '', followAgent: false },
+  sync: { retryInterval: 5000, maxRetries: -1, pingTimeout: 5000 },
+};
+const ADVANCED = {
+  retryInterval: { min: 1000, max: 60000, message: 'Use 1000 to 60000 ms' },
+  maxRetries: { min: -1, max: 100, message: 'Use -1, or 0 to 100' },
+  pingTimeout: { min: 1000, max: 30000, message: 'Use 1000 to 30000 ms' },
+};
+const SAVED_SHOWN_MS = 1500;
 
-    // Form submission
-    document.getElementById('optionsForm').addEventListener('submit', saveSettings);
+function flashSaved(key) {
+  const note = document.querySelector(`.saved[data-for="${key}"]`);
+  if (!note) return;
+  note.hidden = false;
+  clearTimeout(note.timer);
+  note.timer = setTimeout(() => { note.hidden = true; }, SAVED_SHOWN_MS);
+}
 
-    // Button event listeners
-    document.getElementById('refreshStatus').addEventListener('click', refreshConnectionStatus);
-    document.getElementById('saveAdvanced').addEventListener('click', saveAdvancedSettings);
-    document.getElementById('resetDefaults').addEventListener('click', resetToDefaults);
+function setError(id, message) {
+  $(`${id}Error`).textContent = message || '';
+  $(id).setAttribute('aria-invalid', message ? 'true' : 'false');
+}
 
-    // Initial connection status check
-    refreshConnectionStatus();
+async function load() {
+  const sync = await browser.storage.sync.get({ ...DEFAULTS.sync, hostname: null, port: null, testPort: null, testHostname: null });
+  const local = await browser.storage.local.get({ ...DEFAULTS.local, hostname: null, port: null });
+  // Older versions saved host and port to storage.sync
+  $('hostname').value = local.hostname || sync.hostname || DEFAULTS.local.hostname;
+  $('port').value = local.port || sync.port || DEFAULTS.local.port;
+  $('browserName').value = local.browserName;
+  $('followAgent').checked = local.followAgent;
+  for (const id of Object.keys(ADVANCED)) $(id).value = sync[id];
+
+  const testing = sync.testPort || sync.testHostname;
+  $('testNotice').hidden = !testing;
+  if (testing) {
+    $('testNotice').textContent = `The test suite has set ${sync.testHostname || 'the host'}` +
+      `${sync.testPort ? ':' + sync.testPort : ''}, which is used instead of the host and port below.`;
+  }
+}
+
+async function refreshStatus() {
+  const status = await browser.runtime.sendMessage({ action: 'getConnectionStatus' }).catch(() => null);
+  const connected = Boolean(status && status.connected);
+  const config = (status && status.config) || {};
+  const extra = (status && status.extraPorts) || [];
+  $('dot').classList.toggle('on', connected);
+  $('statusText').textContent = connected
+    ? (extra.length ? `Connected to ${1 + extra.length} sessions` : 'Connected')
+    : 'Not connected';
+  $('url').textContent = `ws://${config.hostname || $('hostname').value}:${config.port || $('port').value}`;
+}
+
+let nameTimer;
+$('browserName').addEventListener('input', () => {
+  clearTimeout(nameTimer);
+  nameTimer = setTimeout(async () => {
+    await browser.storage.local.set({ browserName: $('browserName').value.trim().slice(0, 60) });
+    flashSaved('browserName');
+  }, 400);
 });
 
-async function loadSettings() {
-    try {
-        const result = await browser.storage.sync.get({
-            hostname: 'localhost',
-            port: 8765,
-            retryInterval: 5000,
-            maxRetries: -1,
-            pingTimeout: 5000,
-            // Test configuration overrides
-            testPort: null,
-            testHostname: null
-        });
+$('followAgent').addEventListener('change', async () => {
+  await browser.storage.local.set({ followAgent: $('followAgent').checked });
+  flashSaved('followAgent');
+});
 
-        // Per-profile values (storage.local) win over the synced ones older
-        // versions saved; test overrides win over both.
-        const local = await browser.storage.local.get({ hostname: null, port: null, browserName: '', followAgent: false });
-        const displayHostname = result.testHostname || local.hostname || result.hostname;
-        const displayPort = result.testPort || local.port || result.port;
-        document.getElementById('browserName').value = local.browserName;
-        document.getElementById('followAgent').checked = local.followAgent;
+async function saveConnection() {
+  const hostname = $('hostname').value.trim();
+  const port = Number($('port').value);
+  setError('hostname', hostname ? '' : 'Enter a host, such as localhost');
+  setError('port', Number.isInteger(port) && port >= 1 && port <= 65535 ? '' : 'Use a port from 1 to 65535');
+  if (!hostname || $('port').getAttribute('aria-invalid') === 'true') return;
+  await browser.storage.local.set({ hostname, port });
+  await browser.runtime.sendMessage({ type: 'configUpdated', config: { hostname, port } });
+  flashSaved('connection');
+  setTimeout(refreshStatus, 800);
+}
+$('hostname').addEventListener('change', saveConnection);
+$('port').addEventListener('change', saveConnection);
 
-        document.getElementById('hostname').value = displayHostname;
-        document.getElementById('port').value = displayPort;
-        document.getElementById('retryInterval').value = result.retryInterval;
-        document.getElementById('maxRetries').value = result.maxRetries;
-        document.getElementById('pingTimeout').value = result.pingTimeout;
-
-        // Show warning if test overrides are active
-        if (result.testPort || result.testHostname) {
-            showStatus(`Using test configuration overrides (port: ${result.testPort || 'default'}, hostname: ${result.testHostname || 'default'})`, 'success');
-        }
-
-        updateWebSocketUrl();
-    } catch (error) {
-        console.error('Error loading settings:', error);
-        showStatus('Error loading settings', 'error');
-    }
+for (const [id, range] of Object.entries(ADVANCED)) {
+  $(id).addEventListener('change', async () => {
+    const value = Number($(id).value);
+    const valid = Number.isInteger(value) && value >= range.min && value <= range.max;
+    setError(id, valid ? '' : range.message);
+    if (!valid) return;
+    await browser.storage.sync.set({ [id]: value });
+    await browser.runtime.sendMessage({ type: 'advancedConfigUpdated', config: { [id]: value } });
+    flashSaved('advanced');
+  });
 }
 
-async function saveSettings(event) {
-    event.preventDefault();
+$('reconnect').addEventListener('click', async () => {
+  $('statusText').textContent = 'Reconnecting';
+  await browser.runtime.sendMessage({ action: 'forceReconnect' });
+  setTimeout(refreshStatus, 800);
+});
 
-    const hostname = document.getElementById('hostname').value.trim();
-    const port = parseInt(document.getElementById('port').value);
+// A second press within a few seconds confirms, so a stray click cannot wipe
+// the settings and no modal dialog is needed
+let resetArmed;
+$('reset').addEventListener('click', async () => {
+  if (!resetArmed) {
+    $('reset').textContent = 'Press again to reset';
+    resetArmed = setTimeout(() => {
+      resetArmed = null;
+      $('reset').textContent = 'Reset all settings';
+    }, 4000);
+    return;
+  }
+  clearTimeout(resetArmed);
+  resetArmed = null;
+  $('reset').textContent = 'Reset all settings';
+  await browser.storage.local.set(DEFAULTS.local);
+  await browser.storage.sync.set(DEFAULTS.sync);
+  await browser.runtime.sendMessage({ type: 'configUpdated', config: { ...DEFAULTS.sync, hostname: DEFAULTS.local.hostname, port: DEFAULTS.local.port } });
+  await load();
+  flashSaved('advanced');
+  setTimeout(refreshStatus, 800);
+});
 
-    if (!hostname) {
-        showStatus('Hostname is required', 'error');
-        return;
-    }
-
-    if (port < 1 || port > 65535) {
-        showStatus('Port must be between 1 and 65535', 'error');
-        return;
-    }
-
-    try {
-        // Get existing configuration to preserve test overrides
-        const existingConfig = await browser.storage.sync.get({
-            testPort: null,
-            testHostname: null,
-            retryInterval: 5000,
-            maxRetries: -1,
-            pingTimeout: 5000
-        });
-
-        // Name, hostname and port are per profile; Firefox Sync would copy
-        // synced values to every profile on the account.
-        await browser.storage.local.set({
-            hostname: hostname,
-            port: port,
-            browserName: document.getElementById('browserName').value.trim().slice(0, 60),
-            followAgent: document.getElementById('followAgent').checked
-        });
-
-        // Save the new settings while preserving test overrides
-        await browser.storage.sync.set({
-            // Preserve existing test overrides and other settings
-            testPort: existingConfig.testPort,
-            testHostname: existingConfig.testHostname,
-            retryInterval: existingConfig.retryInterval,
-            maxRetries: existingConfig.maxRetries,
-            pingTimeout: existingConfig.pingTimeout
-        });
-
-        // Notify background script of configuration change
-        await browser.runtime.sendMessage({
-            type: 'configUpdated',
-            config: { hostname, port }
-        });
-
-        if (existingConfig.testPort || existingConfig.testHostname) {
-            showStatus('Settings saved! (Test overrides are still active)', 'success');
-        } else {
-            showStatus('Settings saved successfully!', 'success');
-        }
-    } catch (error) {
-        console.error('Error saving settings:', error);
-        showStatus('Error saving settings', 'error');
-    }
-}
-
-async function saveAdvancedSettings() {
-    const retryInterval = parseInt(document.getElementById('retryInterval').value);
-    const maxRetries = parseInt(document.getElementById('maxRetries').value);
-    const pingTimeout = parseInt(document.getElementById('pingTimeout').value);
-
-    if (retryInterval < 1000 || retryInterval > 60000) {
-        showStatus('Retry interval must be between 1000 and 60000ms', 'error');
-        return;
-    }
-
-    if (maxRetries < -1 || maxRetries > 100) {
-        showStatus('Max retries must be -1 or between 0 and 100', 'error');
-        return;
-    }
-
-    if (pingTimeout < 1000 || pingTimeout > 30000) {
-        showStatus('Ping timeout must be between 1000 and 30000ms', 'error');
-        return;
-    }
-
-    try {
-        // Get existing configuration to preserve all settings including test overrides
-        const existingConfig = await browser.storage.sync.get({
-            hostname: 'localhost',
-            port: 8765,
-            testPort: null,
-            testHostname: null
-        });
-
-        await browser.storage.sync.set({
-            retryInterval: retryInterval,
-            maxRetries: maxRetries,
-            pingTimeout: pingTimeout,
-            // Preserve existing configuration
-            hostname: existingConfig.hostname,
-            port: existingConfig.port,
-            testPort: existingConfig.testPort,
-            testHostname: existingConfig.testHostname
-        });
-
-        // Notify background script of advanced configuration change
-        await browser.runtime.sendMessage({
-            type: 'advancedConfigUpdated',
-            config: { retryInterval, maxRetries, pingTimeout }
-        });
-
-        showStatus('Advanced settings saved successfully!', 'success');
-    } catch (error) {
-        console.error('Error saving advanced settings:', error);
-        showStatus('Error saving advanced settings', 'error');
-    }
-}
-
-
-async function refreshConnectionStatus() {
-    try {
-        const response = await browser.runtime.sendMessage({
-            type: 'getConnectionStatus'
-        });
-
-        if (response) {
-            updateConnectionStatus(response.connected);
-        }
-    } catch (error) {
-        console.error('Error getting connection status:', error);
-        updateConnectionStatus(false);
-    }
-}
-
-function updateConnectionStatus(connected) {
-    const indicator = document.getElementById('connectionIndicator');
-    const text = document.getElementById('connectionText');
-
-    if (connected) {
-        indicator.className = 'status-indicator connected';
-        text.textContent = 'Connected';
-    } else {
-        indicator.className = 'status-indicator disconnected';
-        text.textContent = 'Disconnected';
-    }
-}
-
-function updateWebSocketUrl() {
-    const hostname = document.getElementById('hostname').value.trim();
-    const port = document.getElementById('port').value;
-
-    if (hostname && port) {
-        const wsUrl = `ws://${hostname}:${port}`;
-        document.getElementById('wsUrl').value = wsUrl;
-    }
-}
-
-function resetToDefaults() {
-    if (confirm('Reset all settings to default values?')) {
-        document.getElementById('hostname').value = 'localhost';
-        document.getElementById('port').value = 8765;
-        document.getElementById('retryInterval').value = 5000;
-        document.getElementById('maxRetries').value = -1;
-        document.getElementById('pingTimeout').value = 5000;
-
-        updateWebSocketUrl();
-        showStatus('Settings reset to defaults', 'success');
-    }
-}
-
-function showStatus(message, type) {
-    const statusDiv = document.getElementById('status');
-    statusDiv.textContent = message;
-    statusDiv.className = `status ${type}`;
-    statusDiv.style.display = 'block';
-
-    // Hide status after 5 seconds
-    setTimeout(() => {
-        statusDiv.style.display = 'none';
-    }, 5000);
-}
+load().then(refreshStatus);
+setInterval(refreshStatus, 3000);

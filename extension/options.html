@@ -1,210 +1,109 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <meta charset="utf-8">
-    <title>MCP Bridge for Firefox Options</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 600px;
-            margin: 20px auto;
-            padding: 20px;
-            line-height: 1.6;
-        }
-        
-        .header {
-            text-align: center;
-            margin-bottom: 30px;
-            border-bottom: 2px solid #e0e0e0;
-            padding-bottom: 20px;
-        }
-        
-        .section {
-            margin-bottom: 25px;
-            padding: 20px;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            background-color: #f9f9f9;
-        }
-        
-        .section h3 {
-            margin-top: 0;
-            color: #333;
-        }
-        
-        .form-group {
-            margin-bottom: 15px;
-        }
-        
-        label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: bold;
-        }
-        
-        input[type="text"], input[type="number"] {
-            width: 100%;
-            padding: 8px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            font-size: 14px;
-            box-sizing: border-box;
-        }
-        
-        .form-row {
-            display: flex;
-            gap: 10px;
-            align-items: end;
-        }
-        
-        .form-row .form-group {
-            flex: 1;
-        }
-        
-        .form-row .form-group:last-child {
-            flex: 0 0 100px;
-        }
-        
-        button {
-            background-color: #4CAF50;
-            color: white;
-            padding: 10px 20px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-        }
-        
-        button:hover {
-            background-color: #45a049;
-        }
-        
-        .status {
-            margin-top: 15px;
-            padding: 10px;
-            border-radius: 4px;
-            text-align: center;
-            font-weight: bold;
-        }
-        
-        .status.success {
-            background-color: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
-        }
-        
-        .status.error {
-            background-color: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
-        }
-        
-        .help-text {
-            font-size: 12px;
-            color: #666;
-            margin-top: 5px;
-        }
-        
-        .connection-status {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        
-        .status-indicator {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            background-color: #ccc;
-        }
-        
-        .status-indicator.connected {
-            background-color: #4CAF50;
-        }
-        
-        .status-indicator.disconnected {
-            background-color: #f44336;
-        }
-    </style>
+  <meta charset="utf-8">
+  <title>MCP Bridge for Firefox settings</title>
+  <link rel="stylesheet" href="ui.css">
+  <style>
+    body { max-width: 640px; padding: 16px 20px 28px; }
+    h1 { font-size: 17px; }
+    .lead { margin: 4px 0 18px; }
+    h2 { font-size: 13px; margin: 22px 0 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); }
+    .field { display: grid; grid-template-columns: 160px 1fr; gap: 4px 16px; align-items: start; margin-bottom: 14px; }
+    .field > label { padding-top: 5px; font-weight: 600; }
+    .field .hint { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+    .hint.block { display: block; font-weight: normal; }
+    .short { max-width: 120px; }
+    .check { display: flex; gap: 8px; align-items: flex-start; }
+    .check input { margin-top: 3px; }
+    .status { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-raised); }
+    .status #statusText { font-weight: 600; }
+    .status .muted { margin-left: auto; }
+    details { margin-top: 22px; border-top: 1px solid var(--border); padding-top: 12px; }
+    summary { cursor: pointer; font-weight: 600; margin-bottom: 12px; }
+    .saved { font-size: 12px; color: var(--ok); margin-left: 8px; }
+    .actions { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+    #testNotice { margin: 0 0 14px; padding: 8px 12px; border-radius: var(--radius); border: 1px dashed var(--border); }
+  </style>
 </head>
 <body>
-    <div class="header">
-        <h1>🦊 MCP Bridge for Firefox</h1>
-        <p>Configure the connection to the MCP server</p>
+  <h1>MCP Bridge for Firefox</h1>
+  <p class="lead muted">Lets an MCP client such as Claude Code read, click and type in this Firefox. Changes save as you make them.</p>
+
+  <p id="testNotice" class="muted" hidden></p>
+
+  <h2>This browser</h2>
+  <div class="field">
+    <label for="browserName">Name</label>
+    <div>
+      <input type="text" id="browserName" maxlength="60" placeholder="Main, Work, Lost Tribe">
+      <div class="hint">How your AI client tells this Firefox profile apart from the others connected.<span class="saved" data-for="browserName" hidden>Saved</span></div>
     </div>
-
-    <div class="section">
-        <h3>Server Configuration</h3>
-        <form id="optionsForm">
-            <div class="form-row">
-                <div class="form-group">
-                    <label for="hostname">Hostname:</label>
-                    <input type="text" id="hostname" value="localhost" required>
-                    <div class="help-text">Server hostname or IP address</div>
-                </div>
-                <div class="form-group">
-                    <label for="port">WebSocket Port:</label>
-                    <input type="number" id="port" value="8765" min="1" max="65535" required>
-                    <div class="help-text">Default: 8765</div>
-                </div>
-            </div>
-            
-            <div class="form-group">
-                <label for="browserName">Browser name:</label>
-                <input type="text" id="browserName" maxlength="60" placeholder="e.g. Main, Work, Lost Tribe">
-                <div class="help-text">Shown to your AI client when several Firefox profiles are connected, so it can pick this one</div>
-            </div>
-
-            <div class="form-group">
-                <label><input type="checkbox" id="followAgent"> Follow the agent</label>
-                <div class="help-text">Bring the tab the agent starts working in to the front, so you can watch it. Off: the agent works in background tabs and you keep the tab you are on.</div>
-            </div>
-
-            <div class="form-group">
-                <label for="wsUrl">WebSocket URL:</label>
-                <input type="text" id="wsUrl" readonly style="background-color: #f0f0f0;">
-                <div class="help-text">This URL is automatically generated from hostname and port</div>
-            </div>
-            
-            <button type="submit">Save Settings</button>
-        </form>
-        
-        <div id="status" class="status" style="display: none;"></div>
+  </div>
+  <div class="field">
+    <span></span>
+    <div>
+      <label class="check"><input type="checkbox" id="followAgent">
+        <span>Show me the tab the agent works in<span class="saved" data-for="followAgent" hidden>Saved</span>
+          <span class="hint block">When off, the agent works in background tabs and you stay on yours.</span></span>
+      </label>
     </div>
+  </div>
 
-    <div class="section">
-        <h3>Connection Status</h3>
-        <div class="connection-status">
-            <div id="connectionIndicator" class="status-indicator disconnected"></div>
-            <span id="connectionText">Disconnected</span>
-            <button type="button" id="refreshStatus">Refresh</button>
-        </div>
+  <h2>Connection</h2>
+  <div class="status" aria-live="polite">
+    <span id="dot" class="dot"></span><span id="statusText">Not connected</span>
+    <span id="url" class="muted"></span>
+    <button type="button" id="reconnect">Reconnect</button>
+  </div>
+  <p class="hint muted">Each Claude session starts its own server. The first takes this port, the next ones the four ports after it, and this browser connects to all of them.</p>
+  <div class="field">
+    <label for="hostname">Host</label>
+    <div>
+      <input type="text" id="hostname" placeholder="localhost">
+      <div id="hostnameError" class="error" role="alert"></div>
     </div>
-
-    <div class="section">
-        <h3>Advanced Options</h3>
-        <div class="form-group">
-            <label for="retryInterval">Retry Interval (ms):</label>
-            <input type="number" id="retryInterval" value="5000" min="1000" max="60000">
-            <div class="help-text">Time between reconnection attempts (1000-60000ms)</div>
-        </div>
-        
-        <div class="form-group">
-            <label for="maxRetries">Max Retry Attempts:</label>
-            <input type="number" id="maxRetries" value="-1" min="-1" max="100">
-            <div class="help-text">Maximum reconnection attempts (-1 for unlimited)</div>
-        </div>
-        
-        <div class="form-group">
-            <label for="pingTimeout">Ping Timeout (ms):</label>
-            <input type="number" id="pingTimeout" value="5000" min="1000" max="30000">
-            <div class="help-text">Timeout for ping requests (1000-30000ms)</div>
-        </div>
-        
-        <button type="button" id="saveAdvanced">Save Advanced Settings</button>
-        <button type="button" id="resetDefaults">Reset to Defaults</button>
+  </div>
+  <div class="field">
+    <label for="port">Port</label>
+    <div>
+      <input type="number" id="port" class="short" min="1" max="65535" placeholder="8765">
+      <div id="portError" class="error" role="alert"></div>
+      <span class="saved" data-for="connection" hidden>Saved, reconnecting</span>
     </div>
+  </div>
 
-    <script src="options.js"></script>
+  <details>
+    <summary>Advanced</summary>
+    <div class="field">
+      <label for="retryInterval">Retry every</label>
+      <div>
+        <input type="number" id="retryInterval" class="short" min="1000" max="60000" step="500"> ms
+        <div class="hint">How long to wait before trying the server again, 1000 to 60000.</div>
+        <div id="retryIntervalError" class="error" role="alert"></div>
+      </div>
+    </div>
+    <div class="field">
+      <label for="maxRetries">Give up after</label>
+      <div>
+        <input type="number" id="maxRetries" class="short" min="-1" max="100"> tries
+        <div class="hint">-1 keeps trying for as long as Firefox is open.</div>
+        <div id="maxRetriesError" class="error" role="alert"></div>
+      </div>
+    </div>
+    <div class="field">
+      <label for="pingTimeout">Ping timeout</label>
+      <div>
+        <input type="number" id="pingTimeout" class="short" min="1000" max="30000" step="500"> ms
+        <div id="pingTimeoutError" class="error" role="alert"></div>
+      </div>
+    </div>
+    <div class="actions">
+      <span class="saved" data-for="advanced" hidden>Saved</span>
+      <button type="button" id="reset" class="danger">Reset all settings</button>
+    </div>
+  </details>
+
+  <script src="options.js"></script>
 </body>
 </html>

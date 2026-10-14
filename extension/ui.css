@@ -1,0 +1,93 @@
+/* Shared by the popup and the options page. Firefox's own system font and
+   light/dark colours, so both read as part of the browser, with the bridge's
+   one accent: the orange of the on-page overlay. */
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --bg-raised: #f9f9fb;
+  --text: #15141a;
+  --text-muted: #5b5b66;
+  --border: #cfcfd8;
+  --accent: #b4532f;
+  --accent-text: #ffffff;
+  --ok: #017a40;
+  --bad: #c50042;
+  --focus: #0061e0;
+  --radius: 6px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #2b2a33;
+    --bg-raised: #23222b;
+    --text: #fbfbfe;
+    --text-muted: #bfbfc9;
+    --border: #52525e;
+    --accent: #d97757;
+    --accent-text: #15141a;
+    --ok: #54ffbd;
+    --bad: #ff848b;
+    --focus: #00ddff;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: message-box;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+h1, h2 { margin: 0; font-weight: 600; }
+
+a { color: var(--accent); }
+
+.muted { color: var(--text-muted); }
+
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--bad);
+  flex: none;
+}
+.dot.on { background: var(--ok); }
+
+button {
+  font: inherit;
+  padding: 5px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  color: var(--text);
+  cursor: pointer;
+}
+button:hover { border-color: var(--text-muted); }
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+button.danger { color: var(--bad); }
+
+input[type="text"], input[type="number"] {
+  font: inherit;
+  width: 100%;
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+input[aria-invalid="true"] { border-color: var(--bad); }
+
+input[type="checkbox"] { accent-color: var(--accent); margin: 0; }
+
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+
+.error { color: var(--bad); font-size: 12px; min-height: 0; }
