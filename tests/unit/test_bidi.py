@@ -58,11 +58,11 @@ async def test_an_unknown_key_name_is_refused():
 
 
 @pytest.mark.asyncio
-async def test_a_newline_is_typed_as_enter():
+async def test_a_newline_is_shift_enter_so_a_chat_box_does_not_send():
     session = RecordingSession()
     await session.type_text('ctx', 'a\nb')
     values = [step['value'] for step in key_steps(session) if step['type'] == 'keyDown']
-    assert values == ['a', SPECIAL_KEYS['Enter'], 'b']
+    assert values == ['a', SPECIAL_KEYS['Shift'], SPECIAL_KEYS['Enter'], 'b']
 
 
 @pytest.mark.asyncio
