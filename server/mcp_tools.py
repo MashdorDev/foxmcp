@@ -12,6 +12,7 @@ import contextvars
 import functools
 import inspect
 import logging
+import mimetypes
 import uuid
 import os
 import subprocess
@@ -2116,7 +2117,8 @@ class FoxMCPTools:
             _, error = await page_request({
                 "action": "content.upload_begin",
                 "data": {"uploadId": upload_id, "files": [
-                    {"name": os.path.basename(full), "relativePath": relative}
+                    {"name": os.path.basename(full), "relativePath": relative,
+                     "type": mimetypes.guess_type(full)[0] or ""}
                     for full, relative in files]}
             })
             if error:
