@@ -62,6 +62,10 @@ check README.md \
       "the download URL to point at v$version" \
       "releases/download/v$escaped/"
 
+check pyproject.toml \
+      "version = \"$version\"" \
+      "^version[[:space:]]*=[[:space:]]*\"$escaped\""
+
 check CHANGELOG.md \
       "a '## [$version]' section" \
       "^##[[:space:]]+\[$escaped\]"

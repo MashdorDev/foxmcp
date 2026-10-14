@@ -1317,7 +1317,8 @@ async def main():
         parser.error(str(e))
     await server.start_server()
 
-if __name__ == "__main__":
+def run():
+    """Command-line entry point (the mcp-bridge-for-firefox command)"""
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
@@ -1329,3 +1330,7 @@ if __name__ == "__main__":
         # launched the process reports what it exited with, and often shows
         # nothing else.
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    run()
