@@ -20,6 +20,8 @@
     "bookmarks",
     "activeTab",
     "storage",
+    "clipboardRead",
+    "clipboardWrite",
     "webRequest",
     "webRequestBlocking",
     "<all_urls>"

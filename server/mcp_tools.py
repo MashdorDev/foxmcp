@@ -1957,6 +1957,35 @@ class FoxMCPTools:
                 return response["data"], None
             return None, response.get("data", {}).get("message", "Unknown error")
 
+        async def send_file_bytes(files):
+            """Send local files to the extension in chunks, for upload_finish or
+            copy_image to pick up by the returned upload id
+
+            files is a list of (path, relative path). Returns (upload id, None),
+            or (None, error) with the error naming what failed.
+            """
+            upload_id = str(uuid.uuid4())
+            _, error = await page_request({
+                "action": "content.upload_begin",
+                "data": {"uploadId": upload_id, "files": [
+                    {"name": os.path.basename(full), "relativePath": relative,
+                     "type": mimetypes.guess_type(full)[0] or ""}
+                    for full, relative in files]}
+            })
+            if error:
+                return None, error
+            for index, (full, _) in enumerate(files):
+                with open(full, "rb") as handle:
+                    while chunk := handle.read(UPLOAD_CHUNK_BYTES):
+                        _, error = await page_request({
+                            "action": "content.upload_chunk",
+                            "data": {"uploadId": upload_id, "fileIndex": index,
+                                     "data": base64.b64encode(chunk).decode("ascii")}
+                        })
+                        if error:
+                            return None, f"{full}: {error}"
+            return upload_id, None
+
         def target(tab_id: int, ref: Optional[str], selector: Optional[str]) -> Dict[str, Any]:
             if not ref and not selector:
                 raise ValueError("Pass either ref (from content_snapshot) or selector")
@@ -2113,26 +2142,9 @@ class FoxMCPTools:
                 ref, selector = captured["ref"], None
             input_target = target(tab_id, ref, selector)
 
-            upload_id = str(uuid.uuid4())
-            _, error = await page_request({
-                "action": "content.upload_begin",
-                "data": {"uploadId": upload_id, "files": [
-                    {"name": os.path.basename(full), "relativePath": relative,
-                     "type": mimetypes.guess_type(full)[0] or ""}
-                    for full, relative in files]}
-            })
+            upload_id, error = await send_file_bytes(files)
             if error:
                 return f"Failed to upload: {error}"
-            for index, (full, _) in enumerate(files):
-                with open(full, "rb") as handle:
-                    while chunk := handle.read(UPLOAD_CHUNK_BYTES):
-                        _, error = await page_request({
-                            "action": "content.upload_chunk",
-                            "data": {"uploadId": upload_id, "fileIndex": index,
-                                     "data": base64.b64encode(chunk).decode("ascii")}
-                        })
-                        if error:
-                            return f"Failed to upload {full}: {error}"
             data, error = await page_request({
                 "action": "content.upload_finish",
                 "data": {**input_target, "uploadId": upload_id}
@@ -2143,6 +2155,70 @@ class FoxMCPTools:
             more = data["count"] - len(data.get("paths", []))
             return (f"Set {data['count']} file(s) on {data.get('target')}: {shown}"
                     + (f" and {more} more" if more > 0 else ""))
+
+        # Copy Image Tool
+        @self._tool()
+        async def content_copy_image(
+            tab_id: Optional[int] = None,
+            ref: Optional[str] = None,
+            selector: Optional[str] = None,
+            path: Optional[str] = None
+        ) -> str:
+            """Put an image on the system clipboard, as the browser's "Copy Image"
+            does: an image on a page (give tab_id with ref or selector) or a local
+            image file (give path)
+
+            The image goes on the clipboard as PNG. Paste it into a page with
+            content_paste, or the person can paste it with Ctrl+V. Canvas apps
+            such as Miro take an image this way when a file input will not do.
+
+            Args:
+                tab_id: ID of the tab holding the image
+                ref: Ref of the image, or of an element holding one, from content_snapshot
+                selector: CSS selector of the image, used when no ref is given
+                path: Local image file to copy instead of an image on a page
+            """
+            if path:
+                if not os.path.isfile(path):
+                    return f"Failed to copy: {path} is not a file"
+                upload_id, error = await send_file_bytes([(path, "")])
+                if error:
+                    return f"Failed to copy: {error}"
+                request = {"uploadId": upload_id}
+            else:
+                if tab_id is None:
+                    return "Failed to copy: give tab_id with ref or selector, or a path"
+                request = target(tab_id, ref, selector)
+            data, error = await page_request({"action": "content.copy_image", "data": request})
+            if error:
+                return f"Failed to copy the image: {error}"
+            return (f"Copied {data.get('copied')} to the clipboard "
+                    f"({data.get('width')}x{data.get('height')} PNG)")
+
+        # Paste Tool
+        @self._tool()
+        async def content_paste(
+            tab_id: int, ref: Optional[str] = None, selector: Optional[str] = None
+        ) -> str:
+            """Paste what is on the system clipboard into a page, as Ctrl+V would
+
+            The page gets a real paste event with the clipboard's contents, text or
+            an image (see content_copy_image). It goes to the element given, or to
+            the focused element; on a canvas app such as Miro, select or click the
+            place first and paste with no target.
+
+            Args:
+                tab_id: ID of the tab
+                ref: Element ref from content_snapshot to paste into
+                selector: CSS selector, used when no ref is given
+            """
+            data, error = await page_request({
+                "action": "content.paste",
+                "data": {"tabId": tab_id, "ref": ref, "selector": selector}
+            })
+            if error:
+                return f"Failed to paste: {error}"
+            return f"Pasted into {data.get('pasted')}"
 
         # Execute Predefined Script Tool
         @self._tool()

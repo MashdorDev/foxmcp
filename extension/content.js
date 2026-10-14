@@ -644,6 +644,43 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         break;
       }
 
+      // The bytes of an image on the page, for "Copy Image". Read with the
+      // page's own fetch so a same-origin image comes with the page's cookies
+      // and a blob: URL resolves; a cross-origin one the page may not read is
+      // left to the background script, by its URL.
+      case 'imageSource': {
+        const el = findTarget(data);
+        const img = el.tagName === 'IMG' ? el : el.querySelector('img');
+        if (!img) {
+          sendResponse({ error: `${describe(el)} is not an image and holds none` });
+          break;
+        }
+        showOverlay('reading');
+        moveCursorTo(img, false)
+          .then(() => window.wrappedJSObject.fetch(img.currentSrc || img.src))
+          .then(response => response.ok ? response.arrayBuffer() : null)
+          // copied out of the page's realm, so the message can carry it
+          .then(buffer => buffer && new Uint8Array(buffer).slice().buffer)
+          .catch(() => null)
+          .then(bytes => sendResponse({ src: img.currentSrc || img.src, bytes, target: describe(img) }));
+        break;
+      }
+
+      // A real paste of the clipboard into the focused element, or the one
+      // given. The page gets a trusted paste event carrying what is on the
+      // clipboard, as from Ctrl+V; a synthetic event with the same data is
+      // ignored by canvas apps such as Miro.
+      case 'paste': {
+        const el = data.ref || data.selector ? findTarget(data) : (document.activeElement || document.body);
+        showOverlay('typing');
+        moveCursorTo(el, true).then(() => {
+          el.focus?.();
+          const pasted = document.execCommand('paste');
+          sendResponse(pasted ? { pasted: describe(el) } : { error: 'Firefox refused the paste' });
+        });
+        break;
+      }
+
       // Hidden while a screenshot is taken, so the capture shows the page as
       // it is rather than with the agent's border and cursor on top.
       case 'overlayVisibility': {
