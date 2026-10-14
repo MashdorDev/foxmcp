@@ -79,6 +79,12 @@ class WindowInputUnavailable(Exception):
     """Not on Windows, or the tab's Firefox window was not found"""
 
 
+def clipboard_sequence() -> int:
+    """Windows' count of clipboard changes: it goes up whenever anything is
+    copied, by anyone, and says nothing about what was copied"""
+    return user32.GetClipboardSequenceNumber()
+
+
 def firefox_windows() -> List[int]:
     """Visible, not minimised Firefox windows, front to back"""
     found = []
@@ -137,6 +143,11 @@ class WindowInput:
         screen = prep.get('screen')
         if not screen:
             raise WindowInputUnavailable('The page did not say where it is on screen')
+        # Messages to a window that does not show the tab (minimised, or the
+        # tab is behind another) produce no events, while the tool would still
+        # report a real click; scripted events are the honest fallback
+        if screen.get('hidden'):
+            raise WindowInputUnavailable('The tab is not showing (its window is minimised or covered)')
         self.origin = (screen['x'], screen['y'])
         self.dpr = screen['dpr'] or 1
         self.title = screen.get('title') or ''
@@ -151,8 +162,12 @@ class WindowInput:
         windows = [hwnd for hwnd in firefox_windows() if window_contains(hwnd, x, y)]
         # Firefox names its window after the page showing in it, which picks
         # the right one when two Firefox windows overlap there
-        titled = [hwnd for hwnd in windows if self.title and window_title(hwnd).startswith(self.title)]
-        hwnd = (titled or windows or [0])[0]
+        # Only a window showing this page's title: another Firefox window at
+        # the same spot (another profile, the person's own) must never get
+        # the agent's clicks and keys
+        if self.title:
+            windows = [hwnd for hwnd in windows if window_title(hwnd).startswith(self.title)]
+        hwnd = (windows or [0])[0]
         if not hwnd:
             raise WindowInputUnavailable("The tab's Firefox window was not found (minimised?)")
         self.hwnd = hwnd

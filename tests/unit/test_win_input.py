@@ -136,3 +136,18 @@ def test_page_points_become_physical_screen_pixels():
 def test_without_screen_details_the_window_cannot_be_used():
     with pytest.raises(WindowInputUnavailable):
         WindowInput({'target': 'the page'})
+
+
+def test_a_tab_that_is_not_showing_gets_no_window_messages():
+    with pytest.raises(WindowInputUnavailable):
+        WindowInput({'screen': {**PREP['screen'], 'hidden': True}, 'point': PREP['point']})
+
+
+@pytest.mark.asyncio
+async def test_another_firefox_window_at_the_same_spot_is_never_used(monkeypatch):
+    monkeypatch.setattr(win_input, 'firefox_windows', lambda: [11, 22])
+    monkeypatch.setattr(win_input, 'window_contains', lambda hwnd, x, y: True)
+    monkeypatch.setattr(win_input, 'window_title', lambda hwnd: {11: 'Mail - Mozilla Firefox', 22: 'Notes'}[hwnd])
+    with pytest.raises(WindowInputUnavailable):
+        async with WindowInput(PREP):
+            pass
