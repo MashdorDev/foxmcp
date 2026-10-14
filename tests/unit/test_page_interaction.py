@@ -74,7 +74,7 @@ class TestClick:
 
         assert stub_server.sent_request["action"] == "content.click"
         assert stub_server.sent_request["data"] == {
-            "tabId": 4, "ref": "r2", "selector": None, "doubleClick": False}
+            "tabId": 4, "ref": "r2", "selector": None, "doubleClick": False, "rightClick": False}
         assert result == 'Clicked [r2] button "Save"'
 
     @pytest.mark.asyncio

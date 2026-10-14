@@ -91,3 +91,5 @@ input[type="checkbox"] { accent-color: var(--accent); margin: 0; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 
 .error { color: var(--bad); font-size: 12px; min-height: 0; }
+
+code { font-family: monospace; font-size: 12px; padding: 1px 4px; border-radius: 4px; background: var(--bg-raised); border: 1px solid var(--border); }

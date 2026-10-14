@@ -78,6 +78,7 @@ function findTarget({ ref, selector }) {
 // centre rather than calling el.click(). A double click repeats the sequence
 // with the click count in `detail` and ends with dblclick, which is what opens
 // a folder in Google Drive; a lone dblclick event is ignored there.
+// clicks: 1, 2 for a double-click, or 'right' for a right-click
 function clickElement(el, clicks = 1) {
   el.scrollIntoView({ block: 'center', inline: 'center' });
   const rect = el.getBoundingClientRect();
@@ -87,6 +88,15 @@ function clickElement(el, clicks = 1) {
   };
   el.dispatchEvent(new PointerEvent('pointerover', init));
   el.dispatchEvent(new MouseEvent('mouseover', init));
+  if (clicks === 'right') {
+    const right = { ...init, button: 2, buttons: 2 };
+    el.dispatchEvent(new PointerEvent('pointerdown', right));
+    el.dispatchEvent(new MouseEvent('mousedown', right));
+    el.dispatchEvent(new PointerEvent('pointerup', { ...right, buttons: 0 }));
+    el.dispatchEvent(new MouseEvent('mouseup', { ...right, buttons: 0 }));
+    el.dispatchEvent(new MouseEvent('contextmenu', right));
+    return;
+  }
   for (let detail = 1; detail <= clicks; detail++) {
     el.dispatchEvent(new PointerEvent('pointerdown', { ...init, detail, buttons: 1 }));
     el.dispatchEvent(new MouseEvent('mousedown', { ...init, detail, buttons: 1 }));
@@ -701,7 +711,7 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
         moveCursorTo(el, true)
           .then(() => {
-            clickElement(el, data.doubleClick ? 2 : 1);
+            clickElement(el, data.rightClick ? 'right' : data.doubleClick ? 2 : 1);
             sendResponse({ clicked: describe(el) });
           })
           .catch(error => sendResponse({ error: error.message }));
@@ -718,6 +728,38 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
             sendResponse({ typed: describe(el) });
           })
           .catch(error => sendResponse({ error: error.message }));
+        break;
+      }
+
+      // Before real input from WebDriver BiDi (server/bidi.py): move the cursor
+      // there, and mark the page so the server can find this tab among BiDi's
+      // browsing contexts, whose ids are unrelated to the extension's tab ids.
+      case 'realInputPrep': {
+        const el = data.ref || data.selector ? findTarget(data) : null;
+        showOverlay(data.purpose === 'type' ? 'typing' : 'clicking');
+        if (el && data.purpose === 'click' && agentLabel === 'Clicking') {
+          const name = (el.getAttribute('aria-label') || el.innerText || el.value || el.title || '')
+            .replace(/\s+/g, ' ').trim().slice(0, 40);
+          if (name) setLabel(`Clicking "${name}"`);
+        }
+        (el ? moveCursorTo(el, data.purpose === 'click') : Promise.resolve())
+          .then(() => {
+            document.documentElement.setAttribute('data-foxmcp-tab', data.token);
+            sendResponse(el ? { selector: `[${REF_ATTR}="${refFor(el)}"]`, target: describe(el) } : { target: 'the page' });
+          })
+          .catch(error => sendResponse({ error: error.message }));
+        break;
+      }
+
+      case 'checkTypedText': {
+        const el = findTarget(data);
+        try {
+          checkTyped(el, data.text);
+          showTypingField(el);
+          sendResponse({ typed: describe(el) });
+        } catch (error) {
+          sendResponse({ error: error.message });
+        }
         break;
       }
 

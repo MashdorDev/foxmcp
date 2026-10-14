@@ -120,6 +120,8 @@ class BrowserConnection:
     name: str
     version: str = ''
     connected_at: float = field(default_factory=time.time)
+    # Port Firefox listens on for WebDriver BiDi (real input), 0 when not set up
+    real_input_port: int = 0
 
 
 class FoxMCPServer:
@@ -236,6 +238,11 @@ class FoxMCPServer:
             )
         return None
 
+    def real_input_port(self) -> int:
+        """The active browser's WebDriver BiDi port, or 0 when it has none"""
+        browser = self.browsers.get(self.active_browser)
+        return browser.real_input_port if browser else 0
+
     @property
     def extension_connection(self):
         """The active browser's socket, or None when no browser is connected"""
@@ -298,6 +305,10 @@ class FoxMCPServer:
         if browser is None:
             return
         browser.version = str(data.get('version') or '')
+        try:
+            browser.real_input_port = int(data.get('real_input_port') or 0)
+        except (TypeError, ValueError):
+            browser.real_input_port = 0
         if data.get('name'):
             browser.name = str(data['name'])[:60]
 

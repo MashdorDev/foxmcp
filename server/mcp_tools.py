@@ -25,6 +25,11 @@ from typing import Annotated, Dict, Any, Optional, List, TypedDict, Union
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+
+try:
+    from .bidi import BidiSession, BidiUnavailable
+except ImportError:
+    from bidi import BidiSession, BidiUnavailable
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -2005,6 +2010,40 @@ class FoxMCPTools:
                             return None, f"{full}: {error}"
             return upload_id, None
 
+        async def real_input(tab_id, ref, selector, purpose, act):
+            """Do act(bidi, context, element) with real input, when the browser has it
+
+            Returns None when the browser has no real input (or it is not
+            reachable), so the caller falls back to synthetic events; otherwise
+            (prep, None) or (None, error). The content script's prep step goes
+            first: it moves the on-page cursor, marks the tab for BiDi to find,
+            and goes through the person's settings (pause, permissions, blocked
+            sites) like any other action, so real input cannot get round them.
+            """
+            port_of = getattr(self.websocket_server, 'real_input_port', None)
+            port = port_of() if port_of else 0
+            if not port:
+                return None
+            token = uuid.uuid4().hex
+            prep, error = await page_request({
+                "action": "content.real_input_prep",
+                "data": {"tabId": tab_id, "ref": ref, "selector": selector,
+                         "purpose": purpose, "token": token}
+            })
+            if error:
+                return None, error
+            try:
+                async with BidiSession(port) as bidi:
+                    context = await bidi.find_tab(token)
+                    element = await bidi.element(context, prep["selector"]) if prep.get("selector") else None
+                    await act(bidi, context, element)
+            except BidiUnavailable as unavailable:
+                logger.warning(f"Real input unavailable, using synthetic events: {unavailable}")
+                return None
+            except (RuntimeError, ValueError, asyncio.TimeoutError) as failure:
+                return None, str(failure)
+            return prep, None
+
         def target(tab_id: int, ref: Optional[str], selector: Optional[str]) -> Dict[str, Any]:
             if not ref and not selector:
                 raise ValueError("Pass either ref (from content_snapshot) or selector")
@@ -2035,9 +2074,12 @@ class FoxMCPTools:
             tab_id: int,
             ref: Optional[str] = None,
             selector: Optional[str] = None,
-            double_click: bool = False
+            double_click: bool = False,
+            right_click: bool = False
         ) -> str:
-            """Click an element, dispatching the pointer and mouse events a real click fires
+            """Click an element. With real input set up in the add-on's settings the
+            click is a real one, which canvas apps and menus that ignore scripted
+            clicks accept; otherwise the events are dispatched by script.
 
             Args:
                 tab_id: ID of the tab
@@ -2045,14 +2087,24 @@ class FoxMCPTools:
                 selector: CSS selector, used when no ref is given
                 double_click: Double-click instead, as opening a file or folder
                     in a file list usually needs (default: False)
+                right_click: Right-click, to open the page's context menu (default: False)
             """
+            done = "Right-clicked" if right_click else "Double-clicked" if double_click else "Clicked"
+            real = await real_input(tab_id, ref, selector, "click", lambda bidi, context, element:
+                                    bidi.click(context, element, button=2 if right_click else 0,
+                                               clicks=2 if double_click and not right_click else 1))
+            if real is not None:
+                prep, error = real
+                if error:
+                    return f"Failed to click: {error}"
+                return f"{done} {prep.get('target')} (real input)"
             data, error = await page_request({
                 "action": "content.click",
-                "data": {**target(tab_id, ref, selector), "doubleClick": double_click}
+                "data": {**target(tab_id, ref, selector), "doubleClick": double_click, "rightClick": right_click}
             })
             if error:
                 return f"Failed to click: {error}"
-            return f"{'Double-clicked' if double_click else 'Clicked'} {data.get('clicked')}"
+            return f"{done} {data.get('clicked')}"
 
         # Type Tool
         @self._tool()
@@ -2074,6 +2126,28 @@ class FoxMCPTools:
                 clear: Replace the current value instead of appending (default: True)
                 submit: Press Enter afterwards (default: False)
             """
+            async def type_for_real(bidi, context, element):
+                await bidi.click(context, element)
+                if clear:
+                    await bidi.press(context, "Control+a")
+                    await bidi.press(context, "Backspace")
+                await bidi.type_text(context, text)
+
+            real = await real_input(tab_id, ref, selector, "type", type_for_real)
+            if real is not None:
+                prep, error = real
+                if error:
+                    return f"Failed to type: {error}"
+                checked, error = await page_request({
+                    "action": "content.check_typed",
+                    "data": {**target(tab_id, ref, selector), "text": text}
+                })
+                if error:
+                    return f"Failed to type: {error}"
+                if submit:
+                    await real_input(tab_id, ref, selector, "key",
+                                     lambda bidi, context, element: bidi.press(context, "Enter"))
+                return f"Typed into {checked.get('typed')} (real input)"
             data, error = await page_request({
                 "action": "content.type",
                 "data": {**target(tab_id, ref, selector),
@@ -2093,10 +2167,22 @@ class FoxMCPTools:
 
             Args:
                 tab_id: ID of the tab
-                key: Key name as in KeyboardEvent.key
+                key: Key name as in KeyboardEvent.key; with real input also a
+                    combination such as "Control+a" or "Shift+Tab"
                 ref: Element ref from content_snapshot
                 selector: CSS selector, used when no ref is given
             """
+            async def press_for_real(bidi, context, element):
+                if element:
+                    await bidi.click(context, element)
+                await bidi.press(context, key)
+
+            real = await real_input(tab_id, ref, selector, "key", press_for_real)
+            if real is not None:
+                prep, error = real
+                if error:
+                    return f"Failed to press {key}: {error}"
+                return f"Pressed {key} (real input)"
             data, error = await page_request({
                 "action": "content.press_key",
                 "data": {"tabId": tab_id, "key": key, "ref": ref, "selector": selector}
