@@ -114,9 +114,22 @@ const TYPE_STEP_MS = 25;
 
 // Focusing an editable element does not put the caret inside it, and
 // insertText with no caret in the element is refused.
+//
+// The caret goes at the end of the last text, not at the end of the element:
+// after the last <p> of a ProseMirror editor (ChatGPT) each piece typed there
+// became a paragraph of its own, splitting words across lines.
 function caretToEnd(el) {
   const range = document.createRange();
-  range.selectNodeContents(el);
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let last = null;
+  while (walker.nextNode()) last = walker.currentNode;
+  if (last) {
+    range.setStart(last, last.length);
+  } else {
+    let deepest = el;
+    while (deepest.lastElementChild && deepest.lastElementChild.tagName !== 'BR') deepest = deepest.lastElementChild;
+    range.selectNodeContents(deepest);
+  }
   range.collapse(false);
   const selection = window.getSelection();
   selection.removeAllRanges();
