@@ -35,7 +35,7 @@ works in. Set each profile's name on the add-on's options page. Details:
 
 ### 1. The add-on
 
-Install **MCP Bridge for Firefox** from Firefox Add-ons (listing in review). Until then, a signed build can be installed from this repo's releases.
+Install **MCP Bridge for Firefox** from Firefox Add-ons (listing in review). Until then, install the signed build from this repo's releases: download [mcp-bridge-for-firefox-1.7.1.xpi](https://github.com/MashdorDev/mcp-bridge-for-firefox/releases/download/v1.7.1/mcp-bridge-for-firefox-1.7.1.xpi) and open it in Firefox.
 
 ### 2. The MCP server
 
