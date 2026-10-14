@@ -256,6 +256,11 @@ async function setInputFiles(el, files, relativePaths) {
   if (el.tagName !== 'INPUT' || el.type !== 'file') {
     throw new Error('Target must be an <input type=file>');
   }
+  // A page ignores files set on a disabled input (ChatGPT's, while it loads),
+  // so setting them would report success with nothing attached.
+  if (el.disabled) {
+    throw new Error('The file input is disabled; wait for the page to finish loading and try again');
+  }
   // Files built in the extension belong to it, and the page gets "Permission
   // denied" reading them. Each one is rebuilt in the page from its bytes and set
   // through the page's own DataTransfer, so it is an ordinary file as far as the
