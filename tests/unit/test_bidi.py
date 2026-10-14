@@ -85,3 +85,39 @@ async def test_a_tab_without_the_token_is_unavailable():
     session = RecordingSession(tree=['one'], marks={'one': 'other'})
     with pytest.raises(BidiUnavailable):
         await session.find_tab('token')
+
+
+def pointer_steps(session):
+    return [step for method, params in session.sent if method == 'input.performActions'
+            for source in params['actions'] if source['type'] == 'pointer' for step in source['actions']]
+
+
+@pytest.mark.asyncio
+async def test_a_drag_presses_moves_in_steps_and_releases():
+    session = RecordingSession()
+    await session.drag('ctx', {'x': 10, 'y': 20}, {'x': 210, 'y': 120})
+    steps = pointer_steps(session)
+    assert steps[0] == {'type': 'pointerMove', 'x': 10, 'y': 20, 'duration': 0, 'origin': 'viewport'}
+    assert steps[1] == {'type': 'pointerDown', 'button': 0}
+    moves = [s for s in steps[2:] if s['type'] == 'pointerMove']
+    assert len(moves) > 5
+    assert (moves[-1]['x'], moves[-1]['y']) == (210, 120)
+    assert steps[-1] == {'type': 'pointerUp', 'button': 0}
+    # held at both ends, which apps wait for before a drag starts or drops
+    assert steps[2]['type'] == 'pause' and steps[-2]['type'] == 'pause'
+
+
+@pytest.mark.asyncio
+async def test_a_point_click_happens_where_it_was_asked():
+    session = RecordingSession()
+    await session.click_at('ctx', 300, 40, button=2)
+    assert pointer_steps(session) == [
+        {'type': 'pointerMove', 'x': 300, 'y': 40, 'duration': 0, 'origin': 'viewport'},
+        {'type': 'pointerDown', 'button': 2}, {'type': 'pointerUp', 'button': 2}]
+
+
+@pytest.mark.asyncio
+async def test_a_hover_only_moves():
+    session = RecordingSession()
+    await session.hover('ctx', 5, 6)
+    assert [s['type'] for s in pointer_steps(session)] == ['pointerMove']

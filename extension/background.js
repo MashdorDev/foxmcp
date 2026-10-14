@@ -988,6 +988,9 @@ const AGENT_ACTIVITY = {
   'content.copy_image': ['reading', 'Copying an image'],
   'content.paste': ['typing', 'Pasting'],
   'content.real_input_prep': ['clicking', 'Clicking'],
+  'content.real_pointer_prep': ['clicking', 'Moving the mouse'],
+  'content.hover': ['clicking', 'Pointing'],
+  'content.drag': ['clicking', 'Dragging'],
   'content.check_typed': ['typing', 'Typing'],
   'navigation.go_to_url': ['waiting', 'Opening a page'],
   'navigation.back': ['waiting', 'Going back'],
@@ -1137,6 +1140,9 @@ async function handleContentAction(id, action, data) {
         break;
 
       case 'content.real_input_prep':
+      case 'content.real_pointer_prep':
+      case 'content.hover':
+      case 'content.drag':
       case 'content.check_typed':
       case 'content.snapshot':
       case 'content.click':
@@ -1146,7 +1152,8 @@ async function handleContentAction(id, action, data) {
         const pageAction = { 'content.snapshot': 'snapshot', 'content.click': 'click',
           'content.type': 'type', 'content.press_key': 'pressKey',
           'content.capture_file_input': 'captureFileInput', 'content.real_input_prep': 'realInputPrep',
-          'content.check_typed': 'checkTypedText' }[action];
+          'content.check_typed': 'checkTypedText', 'content.real_pointer_prep': 'realPointerPrep',
+          'content.hover': 'hover', 'content.drag': 'drag' }[action];
         const pageResult = await sendMessageWithRetry(data.tabId, { action: pageAction, data });
         if (pageResult && pageResult.error) {
           sendError(id, 'PAGE_ERROR', pageResult.error);
