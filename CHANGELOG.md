@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`content_copy_image` and `content_paste`, the context menu's "Copy Image" and "Paste".** The browser's own right-click menu cannot be opened or driven by an extension, and canvas apps like Miro ignore synthetic right-clicks and synthetic paste events. `content_copy_image` puts an image from a page, or a local image file, on the system clipboard as PNG. `content_paste` runs a real paste, so the page gets a trusted paste event carrying the clipboard's contents; Firefox allows that only into a textarea, so with any other target the paste goes to the page as a whole. The extension now asks for the `clipboardRead` and `clipboardWrite` permissions.
 - **The agent says what it is doing, and the overlay stays until it is done.** Every tool takes an optional `status`, a few words in the first person ("Reading the board") shown on the overlay of the tab it works in; without one the overlay names the action. The overlay no longer fades a few seconds after the last action: it stays until the agent calls the new `tabs_release`, its server goes away, or five minutes pass with nothing done in the tab. The cursor stays on screen and shows whether the agent is thinking, reading, clicking, typing or waiting, and the tab's icon gets a pulsing ring in the tab strip.
 - **"Follow the agent" option.** When on, the tab the agent acts in comes to the front. Off by default.
 - **Several sessions on one browser.** A server that finds its port taken moves to one of the next four, and the extension connects to all of them, so two Claude sessions can drive the same Firefox at once. Each reply goes back to the server that asked.
@@ -16,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **On Windows a second server no longer takes over port 8765 from the first.** `SO_REUSEADDR` lets two sockets bind the same port there; the free-port test now uses `SO_EXCLUSIVEADDRUSE`.
 - **`content_type` checks that the whole text arrived.** Rich editors could replace earlier pieces of a long text and report success with part of it in the field; the caret is now kept at the end between pieces and a short result is reported as an error.
-- **Uploaded files are rebuilt in the page's own realm**, so the page can read them like a file a person picked. Miro's "Upload from device" still hangs on its spinner.
+- **Uploaded files carry their MIME type, and are rebuilt in the page's own realm.** They used to reach the page with an empty type, which ChatGPT copes with by reading the bytes and Miro's "Upload from device" does not: it showed "Uploading..." and never finished.
 - **Typed text stays in the editor's last paragraph.** In ProseMirror editors (ChatGPT) each piece of a long text became a paragraph of its own.
 - **`content_upload_files` refuses a disabled file input** instead of reporting files attached that the page dropped.
 - **An overlay left by an older version is rebuilt** after an update, instead of breaking every action in tabs that stayed open.
