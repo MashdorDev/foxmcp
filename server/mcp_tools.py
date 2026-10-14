@@ -2203,13 +2203,15 @@ class FoxMCPTools:
             """Paste what is on the system clipboard into a page, as Ctrl+V would
 
             The page gets a real paste event with the clipboard's contents, text or
-            an image (see content_copy_image). It goes to the element given, or to
-            the focused element; on a canvas app such as Miro, select or click the
-            place first and paste with no target.
+            an image (see content_copy_image). Firefox lets the extension paste only
+            into a textarea: give one as the target to paste into it. With no
+            target, or another kind, the paste goes to the page as a whole, which
+            is what a canvas app such as Miro listens for: select the item or spot
+            there first.
 
             Args:
                 tab_id: ID of the tab
-                ref: Element ref from content_snapshot to paste into
+                ref: Ref of a textarea from content_snapshot to paste into
                 selector: CSS selector, used when no ref is given
             """
             data, error = await page_request({

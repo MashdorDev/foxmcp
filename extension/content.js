@@ -666,17 +666,35 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         break;
       }
 
-      // A real paste of the clipboard into the focused element, or the one
-      // given. The page gets a trusted paste event carrying what is on the
+      // A real paste of the clipboard into the element given, or into the
+      // page. The page gets a trusted paste event carrying what is on the
       // clipboard, as from Ctrl+V; a synthetic event with the same data is
       // ignored by canvas apps such as Miro.
+      //
+      // Firefox runs a content script's paste only into a <textarea>. For any
+      // other target, or none, a textarea is added off screen for the moment
+      // of the paste; the paste event bubbles from it to the document, where
+      // canvas apps listen.
       case 'paste': {
-        const el = data.ref || data.selector ? findTarget(data) : (document.activeElement || document.body);
+        const el = data.ref || data.selector ? findTarget(data) : null;
+        const previous = document.activeElement;
         showOverlay('typing');
-        moveCursorTo(el, true).then(() => {
-          el.focus?.();
+        (el ? moveCursorTo(el, true) : Promise.resolve()).then(() => {
+          let into = el;
+          let scratch = null;
+          if (!(el instanceof HTMLTextAreaElement)) {
+            scratch = document.createElement('textarea');
+            scratch.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;';
+            document.body.appendChild(scratch);
+            into = scratch;
+          }
+          into.focus();
           const pasted = document.execCommand('paste');
-          sendResponse(pasted ? { pasted: describe(el) } : { error: 'Firefox refused the paste' });
+          if (scratch) {
+            scratch.remove();
+            previous?.focus?.();
+          }
+          sendResponse(pasted ? { pasted: scratch ? 'the page' : describe(el) } : { error: 'Firefox refused the paste' });
         });
         break;
       }
