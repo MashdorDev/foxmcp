@@ -138,7 +138,7 @@ async function browserIdentity() {
     await browser.storage.local.set({ instanceId });
   }
   return { instance_id: instanceId, name: stored.browserName, version: browser.runtime.getManifest().version,
-    real_input_port: stored.realInput ? Number(stored.realInputPort) || 0 : 0 };
+    real_input: Boolean(stored.realInput), real_input_port: Number(stored.realInputPort) || 0 };
 }
 
 async function sendHello(socket) {

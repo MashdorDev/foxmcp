@@ -63,8 +63,7 @@ async function render() {
 
   const { followAgent, paused, realInput, realInputPort } = await loadSettings();
   $('realInput').textContent = !realInput ? 'Real input: off'
-    : realInputPort ? `Real input: on, remote control port ${realInputPort}`
-    : 'Real input: not set up (Settings)';
+    : realInputPort ? `Real input: on, port ${realInputPort}` : 'Real input: on when Firefox allows it';
   $('followAgent').checked = followAgent;
   $('paused').checked = paused;
   $('pausedNote').hidden = !paused;

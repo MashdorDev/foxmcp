@@ -27,9 +27,9 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
 try:
-    from .bidi import BidiSession, BidiUnavailable
+    from .bidi import LIKELY_PORTS, BidiSession, BidiUnavailable, listening_ports
 except ImportError:
-    from bidi import BidiSession, BidiUnavailable
+    from bidi import LIKELY_PORTS, BidiSession, BidiUnavailable, listening_ports
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -2020,9 +2020,14 @@ class FoxMCPTools:
             and goes through the person's settings (pause, permissions, blocked
             sites) like any other action, so real input cannot get round them.
             """
-            port_of = getattr(self.websocket_server, 'real_input_port', None)
-            port = port_of() if port_of else 0
-            if not port:
+            server = self.websocket_server
+            if not getattr(server, 'real_input_allowed', lambda: False)():
+                return None
+            ports = server.real_input_ports()
+            if not ports:
+                # No port set and none found yet: the usual ones that are open
+                ports = await listening_ports(LIKELY_PORTS)
+            if not ports:
                 return None
             token = uuid.uuid4().hex
             prep, error = await page_request({
@@ -2032,17 +2037,22 @@ class FoxMCPTools:
             })
             if error:
                 return None, error
-            try:
-                async with BidiSession(port) as bidi:
-                    context = await bidi.find_tab(token)
-                    element = await bidi.element(context, prep["selector"]) if prep.get("selector") else None
-                    await act(bidi, context, element)
-            except BidiUnavailable as unavailable:
-                logger.warning(f"Real input unavailable, using synthetic events: {unavailable}")
-                return None
-            except (RuntimeError, ValueError, asyncio.TimeoutError) as failure:
-                return None, str(failure)
-            return prep, None
+            # Only the Firefox holding this tab finds the token, so with several
+            # profiles under remote control the right one picks itself
+            for port in ports:
+                try:
+                    async with BidiSession(port) as bidi:
+                        context = await bidi.find_tab(token)
+                        server.real_input_found_on(port)
+                        element = await bidi.element(context, prep["selector"]) if prep.get("selector") else None
+                        await act(bidi, context, element)
+                        return prep, None
+                except BidiUnavailable as unavailable:
+                    logger.info(f"Real input not on port {port}: {unavailable}")
+                except (RuntimeError, ValueError, asyncio.TimeoutError) as failure:
+                    return None, str(failure)
+            server.real_input_found_on(0)
+            return None
 
         def target(tab_id: int, ref: Optional[str], selector: Optional[str]) -> Dict[str, Any]:
             if not ref and not selector:

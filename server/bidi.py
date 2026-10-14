@@ -32,6 +32,10 @@ logger = logging.getLogger(__name__)
 TAB_TOKEN_ATTR = 'data-foxmcp-tab'
 CONNECT_TIMEOUT = 3.0
 COMMAND_TIMEOUT = 30.0
+# Where Firefox's remote control usually listens; tried when a browser has
+# real input on but no port of its own set
+LIKELY_PORTS = range(9222, 9230)
+PORT_PROBE_TIMEOUT = 0.3
 # A Firefox still restoring its tabs can take a while to open a session
 SESSION_TIMEOUT = 15.0
 LATE_SESSION_WAIT = 120.0
@@ -48,6 +52,21 @@ SPECIAL_KEYS = {
     'Meta': '', 'Command': '',
     **{f'F{n}': chr(0xE031 + n - 1) for n in range(1, 13)},
 }
+
+
+async def listening(port: int) -> bool:
+    """Whether anything accepts a connection on localhost:port"""
+    try:
+        _, writer = await asyncio.wait_for(asyncio.open_connection('127.0.0.1', port), PORT_PROBE_TIMEOUT)
+    except (OSError, asyncio.TimeoutError):
+        return False
+    writer.close()
+    return True
+
+
+async def listening_ports(ports) -> List[int]:
+    found = await asyncio.gather(*(listening(port) for port in ports))
+    return [port for port, up in zip(ports, found) if up]
 
 
 class BidiUnavailable(Exception):

@@ -43,7 +43,8 @@ const SETTINGS_DEFAULTS = {
   browserName: '',
   extraServerPorts: 4,
   // Real (trusted) clicks and keys through WebDriver BiDi, when Firefox was
-  // started with --remote-debugging-port=<realInputPort>; 0 means not set up
+  // started with --remote-debugging-port. The server finds the port; set
+  // realInputPort only for one outside 9222-9229 (0: find it)
   realInput: true,
   realInputPort: 0,
 };

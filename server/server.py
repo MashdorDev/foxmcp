@@ -18,7 +18,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 import websockets
 import uvicorn
@@ -120,11 +120,18 @@ class BrowserConnection:
     name: str
     version: str = ''
     connected_at: float = field(default_factory=time.time)
-    # Port Firefox listens on for WebDriver BiDi (real input), 0 when not set up
+    # Real input through WebDriver BiDi: whether the person allows it, the port
+    # they set (0: find it), and the port it was last found on
+    real_input: bool = False
     real_input_port: int = 0
+    real_input_found: int = 0
+    real_input_missed_at: float = 0.0
 
 
 class FoxMCPServer:
+    # How long a browser that had no real input is left alone before looking again
+    REAL_INPUT_RETRY_AFTER = 60.0
+
     # How often to check whether the MCP clients owning monitors are still there
     MONITOR_REAP_INTERVAL = 5.0
 
@@ -238,10 +245,34 @@ class FoxMCPServer:
             )
         return None
 
-    def real_input_port(self) -> int:
-        """The active browser's WebDriver BiDi port, or 0 when it has none"""
+    def real_input_ports(self) -> List[int]:
+        """Ports to try for the active browser's real input, best guess first
+
+        Empty when the person turned real input off. A port they set is the
+        only one tried; otherwise the one it was last found on comes first,
+        and the caller probes the usual ones after it.
+        """
         browser = self.browsers.get(self.active_browser)
-        return browser.real_input_port if browser else 0
+        if not browser or not browser.real_input:
+            return []
+        if browser.real_input_port:
+            return [browser.real_input_port]
+        return [browser.real_input_found] if browser.real_input_found else []
+
+    def real_input_found_on(self, port: int):
+        """Remember where real input worked, or (port 0) that it was not found"""
+        browser = self.browsers.get(self.active_browser)
+        if browser:
+            browser.real_input_found = port
+            browser.real_input_missed_at = 0.0 if port else time.time()
+
+    def real_input_allowed(self) -> bool:
+        """Whether to try real input now: the person allows it, and it was not
+        just looked for in vain (a profile started without remote control
+        would otherwise search for its tab on every click)"""
+        browser = self.browsers.get(self.active_browser)
+        return bool(browser and browser.real_input
+                    and time.time() - browser.real_input_missed_at > self.REAL_INPUT_RETRY_AFTER)
 
     @property
     def extension_connection(self):
@@ -305,6 +336,8 @@ class FoxMCPServer:
         if browser is None:
             return
         browser.version = str(data.get('version') or '')
+        browser.real_input = bool(data.get('real_input'))
+        browser.real_input_missed_at = 0.0  # the person may just have set it up
         try:
             browser.real_input_port = int(data.get('real_input_port') or 0)
         except (TypeError, ValueError):
