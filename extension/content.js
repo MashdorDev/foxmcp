@@ -302,7 +302,6 @@ async function setInputFiles(el, files, relativePaths) {
 // releases the tab; the background script releases it when the agent's server
 // goes, or after five minutes with no action.
 const OVERLAY_ID = 'foxmcp-agent-overlay';
-const CURSOR_MOVE_MS = 350;
 const OVERLAY_LABEL = 'AI agent is working in this tab';
 // How long the ring stays on a field after the last piece of text goes in.
 const FIELD_LINGER_MS = 800;
@@ -518,6 +517,72 @@ function stopTabMarker() {
   markerLinks = null;
 }
 
+// The cursor moves the way a hand on a mouse does, after the motor-control
+// research on pointing:
+// - Fitts' law: the move takes longer the farther and smaller the target,
+//   a + b * log2(distance / width + 1).
+// - A fast first submovement with a bell-shaped speed (minimum jerk), skewed so
+//   it speeds up quicker than it slows down, along a slight arc; on longer moves
+//   it usually stops a little short of the target and now and then past it.
+// - One small corrective submovement onto the target, a faint tremor, and a
+//   short pause to check the target before a click.
+const FITTS_A_MS = 120;
+const FITTS_B_MS = 110;
+const MIN_MOVE_MS = 180;
+const MAX_MOVE_MS = 900;
+const CORRECTION_SHARE = 0.22; // of the move's time, spent on the correction
+const CHECK_PAUSE_MS = [70, 160];
+
+const minimumJerk = t => t * t * t * (10 - 15 * t + 6 * t * t);
+const between = ([low, high]) => low + Math.random() * (high - low);
+
+function humanPath(from, to, targetSize) {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const distance = Math.hypot(dx, dy);
+  const duration = Math.min(MAX_MOVE_MS, Math.max(MIN_MOVE_MS,
+    FITTS_A_MS + FITTS_B_MS * Math.log2(distance / Math.max(targetSize, 8) + 1)));
+  // Where the first submovement ends: short of the target 70% of the time
+  const corrects = distance > 80;
+  const miss = corrects ? (Math.random() < 0.7 ? -1 : 1) * between([0.03, 0.08]) : 0;
+  const sway = corrects ? Math.min(6, targetSize / 4) : 0;
+  const land = {
+    x: to.x + dx * miss + (Math.random() - 0.5) * sway,
+    y: to.y + dy * miss + (Math.random() - 0.5) * sway,
+  };
+  // The arc: a control point off the straight line, to either side
+  const bend = (Math.random() < 0.5 ? -1 : 1) * distance * between([0.04, 0.12]);
+  const control = {
+    x: (from.x + land.x) / 2 - (dy / distance) * bend,
+    y: (from.y + land.y) / 2 + (dx / distance) * bend,
+  };
+  const points = [];
+  const primaryShare = corrects ? 1 - CORRECTION_SHARE : 1;
+  const steps = Math.max(12, Math.round(duration * primaryShare / 16));
+  for (let i = 0; i <= steps; i++) {
+    const s = minimumJerk(Math.pow(i / steps, 0.85));
+    const tremor = i === steps ? 0 : 0.6;
+    points.push({
+      x: (1 - s) * (1 - s) * from.x + 2 * (1 - s) * s * control.x + s * s * land.x + (Math.random() - 0.5) * tremor,
+      y: (1 - s) * (1 - s) * from.y + 2 * (1 - s) * s * control.y + s * s * land.y + (Math.random() - 0.5) * tremor,
+      offset: (i / steps) * primaryShare,
+    });
+  }
+  if (corrects) {
+    const fix = Math.max(4, Math.round(duration * CORRECTION_SHARE / 16));
+    for (let i = 1; i <= fix; i++) {
+      const s = minimumJerk(i / fix);
+      points.push({
+        x: land.x + (to.x - land.x) * s,
+        y: land.y + (to.y - land.y) * s,
+        offset: primaryShare + (i / fix) * CORRECTION_SHARE,
+      });
+    }
+  }
+  points[points.length - 1] = { ...to, offset: 1 };
+  return { points, duration };
+}
+
 async function moveCursorTo(el, press) {
   el.scrollIntoView({ block: 'center', inline: 'center' });
   const rect = el.getBoundingClientRect();
@@ -526,14 +591,20 @@ async function moveCursorTo(el, press) {
   cursorPos = to;
   const root = overlayRoot().shadowRoot;
   const pointer = root.querySelector('.pointer');
+  pointer.getAnimations().forEach(animation => animation.cancel());
   pointer.style.transition = 'none';
-  pointer.style.transform = `translate(${from.x}px, ${from.y}px)`;
-  pointer.getBoundingClientRect();
-  pointer.style.transition = `transform ${CURSOR_MOVE_MS}ms cubic-bezier(.3,.7,.4,1)`;
   pointer.style.transform = `translate(${to.x}px, ${to.y}px)`;
   // Nobody sees a hidden tab, and Firefox holds its timers back for seconds
-  if (!document.hidden) await new Promise(resolve => setTimeout(resolve, CURSOR_MOVE_MS));
+  if (document.hidden) return;
+  if (Math.hypot(to.x - from.x, to.y - from.y) >= 2) {
+    const { points, duration } = humanPath(from, to, Math.min(rect.width, rect.height));
+    const motion = pointer.animate(
+      points.map(({ x, y, offset }) => ({ transform: `translate(${x}px, ${y}px)`, offset })),
+      { duration, easing: 'linear' });
+    await motion.finished.catch(() => {});
+  }
   if (press) {
+    await new Promise(resolve => setTimeout(resolve, between(CHECK_PAUSE_MS)));
     const ripple = document.createElement('div');
     ripple.className = 'ripple';
     ripple.style.left = to.x + 'px';
