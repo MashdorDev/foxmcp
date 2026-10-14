@@ -35,17 +35,38 @@ works in. Set each profile's name on the add-on's options page. Details:
 
 ### 1. The add-on
 
-Install **MCP Bridge for Firefox** from Firefox Add-ons (listing in review). Until then, install the signed build from this repo's releases: download [mcp-bridge-for-firefox-1.8.0.xpi](https://github.com/MashdorDev/mcp-bridge-for-firefox/releases/download/v1.8.0/mcp-bridge-for-firefox-1.8.0.xpi) and open it in Firefox.
+Install **MCP Bridge for Firefox** from Firefox Add-ons (listing in review). Until then, install the signed build from this repo's releases: download [mcp-bridge-for-firefox-1.8.1.xpi](https://github.com/MashdorDev/mcp-bridge-for-firefox/releases/download/v1.8.1/mcp-bridge-for-firefox-1.8.1.xpi) and open it in Firefox.
 
-### 2. The MCP server, in one command
+### 2. The MCP server
 
-The server runs inside your AI client, which starts it when a session starts. With [uv](https://docs.astral.sh/uv/) installed, this downloads, installs and registers it for Claude Code (no clone, no virtualenv):
+The server runs inside your AI client, which starts it when a session starts. Nothing to clone.
+
+**Easiest: ask Claude Code.** Tell it "set up MCP Bridge for Firefox from github.com/MashdorDev/mcp-bridge-for-firefox". It follows the steps below. The add-on's toolbar popup offers the same request, ready to copy, whenever it has no server to talk to.
+
+**As a Claude Code plugin**, from the `/plugin` menu, or in a terminal:
 
 ```bash
-claude mcp add firefox -- uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.8.0 mcp-bridge-for-firefox --stdio
+claude plugin marketplace add MashdorDev/mcp-bridge-for-firefox
+claude plugin install firefox@mcp-bridge-for-firefox
 ```
 
-Then restart Claude Code, or run `/mcp` and reconnect. The add-on's toolbar popup shows the same command, with a Copy button, whenever it has no server to talk to.
+**Or register the server directly** (needs [uv](https://docs.astral.sh/uv/)):
+
+```bash
+claude mcp add firefox -- uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.8.1 mcp-bridge-for-firefox --stdio
+```
+
+Either way, restart Claude Code (or run `/mcp` and reconnect) for the browser tools to appear.
+
+<details>
+<summary>Steps for an AI agent setting this up</summary>
+
+1. Make sure `uv` is installed (`uv --version`). If not, install it: `curl -LsSf https://astral.sh/uv/install.sh | sh` on macOS and Linux, `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"` on Windows.
+2. Install the plugin: `claude plugin marketplace add MashdorDev/mcp-bridge-for-firefox`, then `claude plugin install firefox@mcp-bridge-for-firefox`. If plugins are not available, run the `claude mcp add firefox -- uvx ...` command above instead.
+3. Check that `claude mcp list` shows the firefox server.
+4. Tell the person to install the Firefox add-on if they have not (step 1), and to restart Claude Code or reconnect it under `/mcp`.
+
+</details>
 
 Any client that reads an `mcp.json` (Cursor, Claude Desktop, VS Code):
 
@@ -54,7 +75,7 @@ Any client that reads an `mcp.json` (Cursor, Claude Desktop, VS Code):
   "mcpServers": {
     "firefox": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.8.0", "mcp-bridge-for-firefox", "--stdio"]
+      "args": ["--from", "git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.8.1", "mcp-bridge-for-firefox", "--stdio"]
     }
   }
 }

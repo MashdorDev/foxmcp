@@ -66,6 +66,14 @@ check pyproject.toml \
       "version = \"$version\"" \
       "^version[[:space:]]*=[[:space:]]*\"$escaped\""
 
+check claude-plugin/.claude-plugin/plugin.json \
+      "\"version\": \"$version\"" \
+      "\"version\"[[:space:]]*:[[:space:]]*\"$escaped\""
+
+check claude-plugin/.mcp.json \
+      "the server pinned to @v$version" \
+      "mcp-bridge-for-firefox@v$escaped\""
+
 check CHANGELOG.md \
       "a '## [$version]' section" \
       "^##[[:space:]]+\[$escaped\]"

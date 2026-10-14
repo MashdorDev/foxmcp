@@ -25,7 +25,8 @@
     label.toggle + label.toggle { margin-top: 8px; }
     .paused-note { margin: 6px 0 0; color: var(--bad); font-size: 12px; }
     .setup-lead { margin: 0 0 8px; }
-    #setupCommand { margin: 0 0 8px; padding: 8px; border-radius: var(--radius); border: 1px solid var(--border);
+    .setup-alt { margin: 8px 0 0; font-size: 12px; }
+    #setupRequest { margin: 0 0 8px; padding: 8px; border-radius: var(--radius); border: 1px solid var(--border);
       background: var(--bg-raised); font-size: 11px; white-space: pre-wrap; word-break: break-all; user-select: all; }
     footer { display: flex; gap: 8px; justify-content: flex-end; padding: 10px 14px 12px; border-top: 1px solid var(--border); }
   </style>
@@ -43,9 +44,10 @@
   </section>
 
   <section id="setup" hidden>
-    <p class="setup-lead">Nothing to connect to yet. The bridge's server runs inside Claude Code: add it once on this computer (needs <a href="https://docs.astral.sh/uv/" target="_blank">uv</a>), then restart Claude Code or run <code>/mcp</code>.</p>
-    <pre id="setupCommand"></pre>
-    <button id="copySetup">Copy command</button>
+    <p class="setup-lead">Nothing to connect to yet. The bridge's server runs inside Claude Code. Set it up once on this computer by asking Claude Code:</p>
+    <pre id="setupRequest"></pre>
+    <button id="copySetup">Copy</button>
+    <p class="muted setup-alt">Or install the <code>firefox</code> plugin from the <code>MashdorDev/mcp-bridge-for-firefox</code> marketplace under <code>/plugin</code>. Then restart Claude Code.</p>
   </section>
 
   <section>
