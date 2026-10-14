@@ -313,6 +313,12 @@ let agentLabel = OVERLAY_LABEL;
 
 function overlayRoot() {
   let host = document.getElementById(OVERLAY_ID);
+  // An overlay left by an older version of the add-on, from before it was
+  // updated in a tab that stayed open, lacks the parts this one drives.
+  if (host && !host.shadowRoot?.querySelector('.pointer .badge')) {
+    host.remove();
+    host = null;
+  }
   if (!host) {
     host = document.createElement('div');
     host.id = OVERLAY_ID;
