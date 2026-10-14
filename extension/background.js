@@ -142,9 +142,6 @@ browser.storage.onChanged.addListener((changes, area) => {
 
 function connectToMCPServer() {
   try {
-    console.log('🔍 CONNECT ATTEMPT - Stack trace:');
-    console.trace();
-
     // IMPORTANT: Only one WebSocket connection is allowed at a time
     // Disconnect any existing connection first to prevent multiple connections
     if (websocket && websocket.readyState !== WebSocket.CLOSED) {
@@ -155,7 +152,6 @@ function connectToMCPServer() {
     // Compute WebSocket URL dynamically using current config
     const WS_URL = `ws://${CONFIG.hostname}:${CONFIG.port}`;
     console.log(`🔗 Connecting to ${WS_URL} (attempt ${retryAttempts + 1})`);
-    console.log(`🔧 Using CONFIG:`, JSON.stringify(CONFIG, null, 2));
 
     const socket = new WebSocket(WS_URL);
     websocket = socket;
@@ -167,11 +163,6 @@ function connectToMCPServer() {
       connectionRetryAttempts = 0; // Reset connection retry counter
       sendHello(socket).catch(error => console.error('Could not send hello:', error));
 
-      // Send an immediate debug message to test after a small delay
-      setTimeout(() => {
-        console.log('🔌 WebSocket connection established and ready');
-      }, 200);
-
       // Flush any buffered debug logs
       if (typeof window.flushDebugLogBuffer === 'function') {
         setTimeout(() => {
@@ -181,8 +172,6 @@ function connectToMCPServer() {
     };
 
     socket.onmessage = async (event) => {
-      // Test debug message right when we receive a message
-      console.log('📨 Extension received message from server');
       await handleMessage(JSON.parse(event.data), socket);
     };
 
@@ -315,8 +304,6 @@ function updateConfig(newConfig) {
 // Load configuration from storage on startup
 async function loadConfig() {
   console.log('📥 Loading configuration from storage...');
-  console.log('🔍 LOADCONFIG - Stack trace:');
-  console.trace();
 
   // Load from storage - browser.storage.sync.get() always succeeds
   const result = await browser.storage.sync.get({
@@ -482,24 +469,6 @@ function sendError(id, code, message, details = {}) {
   };
 
   socket.send(JSON.stringify(errorMessage));
-}
-
-function sendDebugLog(message, level = 'log') {
-  // Check WebSocket state directly instead of relying on isConnected flag
-  if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
-
-  const debugMessage = {
-    id: `debug_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-    type: 'debug_log',
-    action: 'debug',
-    data: {
-      level: level,
-      message: message,
-      timestamp: new Date().toISOString()
-    }
-  };
-
-  websocket.send(JSON.stringify(debugMessage));
 }
 
 // Handle popup requests for connection status
@@ -1685,9 +1654,6 @@ function captureRequestEvent(monitorId, eventType, details) {
     });
     capturedRequests.set(monitorId, captured);
     request.listed_by.add(monitorId);
-
-    const sizeInfo = request.response_content_length ? ` (${request.response_content_length} bytes)` : '';
-    console.log(`📋 Captured request: ${request.method} ${request.url} -> ${request.status_code || 'ERROR'}${sizeInfo}`);
   }
 }
 
@@ -1857,9 +1823,6 @@ async function handleRequestsAction(id, action, data) {
   try {
     switch (action) {
       case 'requests.start_monitoring':
-        // Always send debug message to test if WebSocket works
-        console.log('📡 ALWAYS: requests.start_monitoring called');
-
         const monitor_id = `mon_${Date.now()}`;
         const monitor = {
           id: monitor_id,
@@ -1869,9 +1832,6 @@ async function handleRequestsAction(id, action, data) {
           started_at: new Date().toISOString(),
           status: 'active'
         };
-
-        // Debug: Check what options we received
-        console.log(`📡 DEBUG: Monitor options received: ${JSON.stringify(monitor.options)}`);
 
         // Register the monitor before the listeners go up, so the first request
         // through onBeforeRequest can already find it and tap its body.
@@ -2511,12 +2471,10 @@ console.log('🚀 Extension starting - loading configuration...');
 async function initializeExtension() {
   try {
     console.log('🚀 Initializing extension...');
-    console.log('📍 BEFORE loadConfig() - CONFIG:', JSON.stringify(CONFIG, null, 2));
 
     await loadConfig();
 
     console.log('✅ Configuration loaded successfully');
-    console.log('📍 AFTER loadConfig() - CONFIG:', JSON.stringify(CONFIG, null, 2));
 
     // Connect after config load
     console.log('🔌 Connecting to MCP server...');

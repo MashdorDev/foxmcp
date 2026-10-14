@@ -4,8 +4,6 @@
  * Licensed under the MIT License - see LICENSE file for details
  */
 
-// Content script for page interaction
-console.log('FoxMCP content script loaded');
 
 // Elements a snapshot lists. Anything clickable or editable, plus headings so
 // the listing reads as an outline of the page rather than a bag of controls.
