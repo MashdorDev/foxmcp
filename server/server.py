@@ -521,6 +521,11 @@ class FoxMCPServer:
 
             # Wait for response with timeout
             response = await asyncio.wait_for(response_future, timeout=timeout)
+            # The extension puts its reason in data.message; most tools only
+            # look for "error", and without it said "Unable to create tab"
+            # where the extension had said why (a blocked site, a pause).
+            if response.get("type") == "error" and "error" not in response:
+                response = {**response, "error": (response.get("data") or {}).get("message") or "The extension refused the request"}
             return response
 
         except asyncio.TimeoutError:
