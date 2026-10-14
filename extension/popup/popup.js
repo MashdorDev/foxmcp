@@ -9,11 +9,10 @@
 
 const $ = id => document.getElementById(id);
 
-// The one line that installs and registers the server on a new computer,
-// pinned to this add-on's version so the two halves match
-const SETUP_COMMAND = 'claude mcp add firefox -- uvx --from ' +
-  `git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v${browser.runtime.getManifest().version} ` +
-  'mcp-bridge-for-firefox --stdio';
+// What to ask Claude Code on a computer without the server: the README has
+// the steps for an agent (install uv if needed, then the plugin), so Claude
+// does the setup and nobody has to type a command
+const SETUP_REQUEST = 'Set up MCP Bridge for Firefox from github.com/MashdorDev/mcp-bridge-for-firefox';
 
 async function render() {
   const status = await browser.runtime.sendMessage({ action: 'getConnectionStatus' })
@@ -80,12 +79,12 @@ async function render() {
 }
 
 $('version').textContent = `v${browser.runtime.getManifest().version}`;
-$('setupCommand').textContent = SETUP_COMMAND;
+$('setupRequest').textContent = SETUP_REQUEST;
 
 $('copySetup').addEventListener('click', async () => {
-  await navigator.clipboard.writeText(SETUP_COMMAND);
+  await navigator.clipboard.writeText(SETUP_REQUEST);
   $('copySetup').textContent = 'Copied';
-  setTimeout(() => { $('copySetup').textContent = 'Copy command'; }, 1500);
+  setTimeout(() => { $('copySetup').textContent = 'Copy'; }, 1500);
 });
 
 $('followAgent').addEventListener('change', event =>
