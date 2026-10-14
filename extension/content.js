@@ -398,6 +398,7 @@ const CURSOR_STATES = ['idle', 'thinking', 'reading', 'clicking', 'typing', 'wai
 let fieldTimer = null;
 let idleTimer = null;
 let cursorPos = null;
+let cursorState = 'idle';
 let agentLabel = OVERLAY_LABEL;
 
 // The person's settings for what the overlay shows (settings.js), applied
@@ -510,6 +511,9 @@ function setCursorState(state) {
   for (const name of CURSOR_STATES) pointer.classList.toggle(name, name === state);
   clearTimeout(idleTimer);
   if (state === 'thinking') idleTimer = setTimeout(() => setCursorState('idle'), IDLE_AFTER_MS);
+  if (state !== cursorState) reading = null;
+  cursorState = state;
+  scheduleIdleMotion();
 }
 
 function setLabel(text) {
@@ -539,6 +543,7 @@ function hideOverlay() {
   }
   clearTimeout(idleTimer);
   clearTimeout(fieldTimer);
+  clearTimeout(idleMotionTimer);
   stopTabMarker();
 }
 
@@ -736,6 +741,91 @@ async function moveCursorToPoint(to, targetSize, press) {
     root.appendChild(ripple);
     setTimeout(() => ripple.remove(), 500);
   }
+}
+
+// Where the viewport sits on screen, for real input posted to the window
+// (server/win_input.py): its top left in CSS pixels, the scale to physical
+// pixels, and the title Firefox gives the window
+function screenInfo() {
+  return { x: window.mozInnerScreenX, y: window.mozInnerScreenY, dpr: window.devicePixelRatio, title: document.title };
+}
+
+// Between actions the cursor moves the way a hand resting on a mouse does.
+// Studies of the pointer during reading and search (Rodden et al., CHI 2008;
+// Huang, White and Buscher, CHI 2012) find it parked most of the time. When it
+// moves, it follows the eyes: sideways along the line being read, then back to
+// the start of the next one, or it hesitates in small moves near where it
+// rests. The pauses between moves are long and uneven (log-normal here).
+const IDLE_MOTION = {
+  idle: { pause: 4000, spread: 0.6, drift: [3, 16], reposition: 0.12 },
+  thinking: { pause: 1800, spread: 0.5, drift: [3, 10], reposition: 0.05 },
+  waiting: { pause: 2400, spread: 0.5, drift: [3, 12], reposition: 0.05 },
+  reading: { pause: 700, spread: 0.4 },
+};
+const READ_STEP = [22, 70];      // px per eye-following move along a line
+const READ_LINE = [180, 420];    // how far along a line before the return sweep
+const LINE_HEIGHT = [18, 28];
+const EDGE = 24;
+let idleMotionTimer = null;
+let reading = null;
+
+function gaussian() {
+  let u = 0;
+  while (!u) u = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random());
+}
+
+function scheduleIdleMotion() {
+  clearTimeout(idleMotionTimer);
+  const style = IDLE_MOTION[cursorState];
+  if (style) idleMotionTimer = setTimeout(idleStep, style.pause * Math.exp(style.spread * gaussian()));
+}
+
+const clampToView = point => ({
+  x: Math.min(innerWidth - EDGE, Math.max(EDGE, point.x)),
+  y: Math.min(innerHeight - EDGE, Math.max(EDGE, point.y)),
+});
+
+function nextReadingPoint() {
+  if (!reading) reading = { startX: cursorPos.x, y: cursorPos.y, length: between(READ_LINE) };
+  if (cursorPos.x - reading.startX >= reading.length || cursorPos.x > innerWidth - EDGE * 3) {
+    // Return sweep to the start of the next line, back up the page at the bottom
+    reading.y += between(LINE_HEIGHT);
+    if (reading.y > innerHeight * 0.85) reading.y = innerHeight * 0.3;
+    reading.length = between(READ_LINE);
+    return { point: clampToView({ x: reading.startX + (Math.random() - 0.5) * 12, y: reading.y }), ms: between([320, 480]) };
+  }
+  return { point: clampToView({ x: cursorPos.x + between(READ_STEP), y: reading.y + (Math.random() - 0.5) * 3 }),
+    ms: between([150, 260]) };
+}
+
+function nextRestingPoint(style) {
+  const far = Math.random() < style.reposition;
+  const distance = far ? between([40, 120]) : between(style.drift);
+  const angle = Math.random() * 2 * Math.PI;
+  return { point: clampToView({ x: cursorPos.x + Math.cos(angle) * distance, y: cursorPos.y + Math.sin(angle) * distance }),
+    ms: far ? between([380, 650]) : between([220, 420]) };
+}
+
+async function idleStep() {
+  const style = IDLE_MOTION[cursorState];
+  const host = document.getElementById(OVERLAY_ID);
+  if (!style || !host || host.style.opacity !== '1') return;
+  if (!document.hidden && cursorPos && settings.cursorEnabled && settings.cursorIdleMotion &&
+      !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const { point, ms } = cursorState === 'reading' ? nextReadingPoint() : nextRestingPoint(style);
+    const from = cursorPos;
+    cursorPos = point;
+    const pointer = host.shadowRoot.querySelector('.pointer');
+    pointer.style.transform = `translate(${point.x}px, ${point.y}px)`;
+    const frames = [];
+    for (let i = 0; i <= 10; i++) {
+      const s = minimumJerk(i / 10);
+      frames.push({ transform: `translate(${from.x + (point.x - from.x) * s}px, ${from.y + (point.y - from.y) * s}px)` });
+    }
+    await pointer.animate(frames, { duration: ms, easing: 'linear' }).finished.catch(() => {});
+  }
+  scheduleIdleMotion();
 }
 
 // Listen for messages from background script
