@@ -1,0 +1,32 @@
+# The MCP server as an installable package, so a machine needs no clone or
+# virtualenv: `uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.7.2
+# mcp-bridge-for-firefox --stdio` downloads, installs and runs it. The code
+# stays in server/ and is installed as the mcp_bridge_for_firefox package.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-bridge-for-firefox"
+version = "1.7.2"
+description = "MCP server that lets Claude Code and other MCP clients use Firefox through the MCP Bridge add-on"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "websockets>=12.0",
+    "fastmcp>=3.0.0,<4",
+    "uvicorn>=0.31.1",
+    "pydantic>=2.11.7",
+]
+
+[project.scripts]
+mcp-bridge-for-firefox = "mcp_bridge_for_firefox.server:run"
+
+[project.urls]
+Homepage = "https://github.com/MashdorDev/mcp-bridge-for-firefox"
+
+[tool.setuptools]
+packages = ["mcp_bridge_for_firefox"]
+package-dir = { mcp_bridge_for_firefox = "server" }
