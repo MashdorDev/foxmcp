@@ -109,6 +109,10 @@
       <div class="hint">Slower moves make each click and keystroke take longer.</div></div>
   </div>
   <div class="field">
+    <span class="name">Between actions</span>
+    <label class="check"><input type="checkbox" data-setting="cursorIdleMotion"><span>Move the cursor like a resting hand<span class="hint block">While the agent thinks, reads or waits, the cursor mostly stays put, now and then drifts a little, and follows the lines it reads. Only the drawn cursor moves; the page gets no mouse events from it.</span></span></label>
+  </div>
+  <div class="field">
     <span class="name">Typing</span>
     <label class="check"><input type="checkbox" data-setting="typingAnimated"><span>Show text being typed in<span class="hint block">Off puts the text in at once, which is faster.</span></span></label>
   </div>
@@ -146,7 +150,7 @@
   </div>
 
   <h2 id="realInput">Real input</h2>
-  <p class="hint">Pages such as Miro ignore clicks and keys that come from a script. Real input sends them the way a mouse and keyboard would, through Firefox's remote control (WebDriver BiDi). It needs Firefox started with <code>--remote-debugging-port=PORT</code>, for example in this profile's shortcut. While remote control is on, other programs on this computer can drive Firefox through that port too.</p>
+  <p class="hint">Pages such as Miro ignore clicks and keys that come from a script. Real input sends them the way a mouse and keyboard would. On Windows it needs nothing else: the bridge hands them to this Firefox window directly, your own pointer stays where it is, and the tab comes to the front of its window first. Elsewhere it goes through Firefox's remote control (WebDriver BiDi), which needs Firefox started with <code>--remote-debugging-port=PORT</code>; while that is on, every page can tell the browser is remote controlled (<code>navigator.webdriver</code>), and other programs on this computer can drive Firefox through that port too.</p>
   <div class="field">
     <span class="name">Use real input</span>
     <label class="check"><input type="checkbox" data-setting="realInput">
@@ -155,7 +159,7 @@
   <div class="field">
     <label for="realInputPort">Remote control port</label>
     <div><input type="number" id="realInputPort" data-setting="realInputPort" class="short" min="0" max="65535">
-      <div class="hint">Leave at 0: the bridge finds the port by itself on 9222 to 9229. Set it only if Firefox was started with another port.</div>
+      <div class="hint">For remote control only. Leave at 0: the bridge finds the port by itself on 9222 to 9229. Set it only if Firefox was started with another port.</div>
       <div class="error" data-error="realInputPort"></div></div>
   </div>
 

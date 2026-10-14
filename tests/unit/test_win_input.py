@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""
+What server/win_input.py posts to Firefox's window, checked without a browser
+
+Licensed under the MIT License - see LICENSE file for details
+"""
+
+import pytest
+
+import test_imports  # Automatic path setup
+from server import win_input
+from server.win_input import (WindowInput, WindowInputUnavailable, WM_CHAR, WM_KEYDOWN, WM_KEYUP,
+                              WM_SYSKEYDOWN, WM_SYSKEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
+                              WM_LBUTTONDBLCLK, VK_CONTROL, VK_MENU, VK_SHIFT)
+
+pytestmark = pytest.mark.skipif(not win_input.AVAILABLE, reason='Window input is Windows only')
+
+PREP = {'screen': {'x': 100, 'y': 50, 'dpr': 2, 'title': 'Page'}, 'point': {'x': 10, 'y': 20}}
+
+
+class RecordingWindow(WindowInput):
+    """Records what it would post and which keys it would hold"""
+
+    def __init__(self):
+        super().__init__(PREP)
+        self.posted = []
+        self.held = []
+
+    def post(self, message, wparam, lparam):
+        self.posted.append((message, wparam))
+
+    def hold(self, keys):
+        self.held.append(list(keys))
+
+    def release(self):
+        self.held.append([])
+
+    def client_point(self, x, y):
+        return round(x), round(y)
+
+
+@pytest.fixture(autouse=True)
+def no_waiting(monkeypatch):
+    async def instant(_):
+        pass
+    monkeypatch.setattr(win_input.asyncio, 'sleep', instant)
+
+
+@pytest.mark.asyncio
+async def test_a_shortcut_holds_its_modifier_and_types_nothing():
+    window = RecordingWindow()
+    await window.press(None, 'Control+a')
+    assert window.posted == [(WM_KEYDOWN, VK_CONTROL), (WM_KEYDOWN, ord('A')),
+                             (WM_KEYUP, ord('A')), (WM_KEYUP, VK_CONTROL)]
+    assert window.held == [[VK_CONTROL], []]
+
+
+@pytest.mark.asyncio
+async def test_alt_combinations_are_system_keys():
+    window = RecordingWindow()
+    await window.press(None, 'Alt+2')
+    assert window.posted == [(WM_SYSKEYDOWN, VK_MENU), (WM_SYSKEYDOWN, ord('2')),
+                             (WM_SYSKEYUP, ord('2')), (WM_KEYUP, VK_MENU)]
+
+
+@pytest.mark.asyncio
+async def test_enter_is_only_a_key_down_and_up():
+    # Windows makes the character itself; posting one too typed Enter twice
+    window = RecordingWindow()
+    await window.press(None, 'Enter')
+    assert window.posted == [(WM_KEYDOWN, 0x0D), (WM_KEYUP, 0x0D)]
+
+
+@pytest.mark.asyncio
+async def test_a_single_character_is_typed_whatever_the_layout():
+    window = RecordingWindow()
+    await window.press(None, 'ש')
+    assert window.posted == [(WM_CHAR, ord('ש'))]
+
+
+@pytest.mark.asyncio
+async def test_text_goes_in_as_characters_and_line_breaks_as_shift_enter():
+    window = RecordingWindow()
+    await window.type_text(None, 'hi\nשלום')
+    assert window.posted == [(WM_CHAR, ord('h')), (WM_CHAR, ord('i')),
+                             (WM_KEYDOWN, VK_SHIFT), (WM_KEYDOWN, 0x0D), (WM_KEYUP, 0x0D), (WM_KEYUP, VK_SHIFT),
+                             *[(WM_CHAR, ord(c)) for c in 'שלום']]
+
+
+@pytest.mark.asyncio
+async def test_emoji_hand_the_text_to_another_way_before_any_of_it_is_typed():
+    window = RecordingWindow()
+    with pytest.raises(WindowInputUnavailable):
+        await window.type_text(None, 'ok 🙂')
+    assert window.posted == []
+
+
+@pytest.mark.asyncio
+async def test_a_double_click_sends_the_second_press_as_a_double_click():
+    window = RecordingWindow()
+    await window.click(None, window.point, clicks=2)
+    presses = [message for message, _ in window.posted if message != win_input.WM_MOUSEMOVE]
+    assert presses == [WM_LBUTTONDOWN, WM_LBUTTONUP, WM_LBUTTONDBLCLK, WM_LBUTTONUP]
+
+
+def test_page_points_become_physical_screen_pixels():
+    window = RecordingWindow()
+    assert window.screen_point(10, 20) == (220, 140)
+
+
+def test_without_screen_details_the_window_cannot_be_used():
+    with pytest.raises(WindowInputUnavailable):
+        WindowInput({'target': 'the page'})

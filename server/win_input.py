@@ -1,0 +1,324 @@
+#!/usr/bin/env python3
+"""
+Real (trusted) mouse and keyboard input on Windows, without remote control
+
+Firefox turns the window messages Windows delivers to it (WM_LBUTTONDOWN,
+WM_CHAR and the rest) into trusted DOM events, whoever posted them. Posting
+them to the tab's window gives the same real input as WebDriver BiDi, with two
+differences that matter: Firefox does not have to run with
+--remote-debugging-port, which sets navigator.webdriver for every page, and
+the person's own mouse pointer never moves, so they can keep working while
+the agent clicks. The window does not need to be in front either; only the
+tab has to be the one showing in it, which the extension sees to.
+
+Modifier keys are the one catch: Firefox reads them from the keyboard state of
+its input thread, not from the messages. So for a combination such as Alt+2
+this thread joins Firefox's input queue for a moment and sets that state.
+
+Licensed under the MIT License - see LICENSE file for details
+"""
+
+import asyncio
+import sys
+from typing import Any, Dict, List
+
+AVAILABLE = sys.platform == 'win32'
+
+if AVAILABLE:
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL('user32', use_last_error=True)
+    kernel32 = ctypes.WinDLL('kernel32')
+    # Screen positions in physical pixels, as the content script reports them
+    # (CSS pixels times devicePixelRatio), on every monitor
+    try:
+        user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))  # per monitor v2
+    except (AttributeError, OSError):
+        pass
+    user32.VkKeyScanW.restype = ctypes.c_short
+    EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_LBUTTONDBLCLK = 0x200, 0x201, 0x202, 0x203
+WM_RBUTTONDOWN, WM_RBUTTONUP = 0x204, 0x205
+WM_KEYDOWN, WM_KEYUP, WM_CHAR, WM_SYSKEYDOWN, WM_SYSKEYUP = 0x100, 0x101, 0x102, 0x104, 0x105
+MK_LBUTTON, MK_RBUTTON = 0x1, 0x2
+
+VK_LBUTTON, VK_RBUTTON = 0x01, 0x02
+VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN = 0x10, 0x11, 0x12, 0x5B
+MODIFIERS = {'Shift': VK_SHIFT, 'Control': VK_CONTROL, 'Ctrl': VK_CONTROL, 'Alt': VK_MENU,
+             'Meta': VK_LWIN, 'Command': VK_LWIN}
+# Left and right variants Firefox may check alongside the generic key
+SIDES = {VK_SHIFT: (0xA0, 0xA1), VK_CONTROL: (0xA2, 0xA3), VK_MENU: (0xA4, 0xA5), VK_LWIN: (0x5C,)}
+
+# KeyboardEvent.key names to virtual-key codes
+SPECIAL_KEYS = {
+    'Enter': 0x0D, 'Return': 0x0D, 'Tab': 0x09, 'Escape': 0x1B, 'Esc': 0x1B,
+    'Backspace': 0x08, 'Delete': 0x2E, 'Space': 0x20, ' ': 0x20,
+    'ArrowLeft': 0x25, 'ArrowUp': 0x26, 'ArrowRight': 0x27, 'ArrowDown': 0x28,
+    'Home': 0x24, 'End': 0x23, 'PageUp': 0x21, 'PageDown': 0x22, 'Insert': 0x2D,
+    **{f'F{n}': 0x70 + n - 1 for n in range(1, 13)},
+}
+EXTENDED_KEYS = {0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E, VK_LWIN}
+
+# Pauses that let Firefox take one step before the next: between the parts of
+# a click, after a key with modifiers (whose state must hold until Firefox has
+# read it), and every so many characters of typed text
+STEP_S = 0.03
+MODIFIER_HOLD_S = 0.15
+CHARS_PER_BATCH = 40
+# A drag, as in bidi.py: the move, its steps, and the hold at each end
+DRAG_S = 0.6
+DRAG_STEPS = 20
+DRAG_HOLD_S = 0.12
+HOVER_STEPS = 6
+
+
+class WindowInputUnavailable(Exception):
+    """Not on Windows, or the tab's Firefox window was not found"""
+
+
+def firefox_windows() -> List[int]:
+    """Visible, not minimised Firefox windows, front to back"""
+    found = []
+
+    @EnumWindowsProc
+    def visit(hwnd, _):
+        name = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, name, 64)
+        if name.value == 'MozillaWindowClass' and user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd):
+            found.append(hwnd)
+        return True
+
+    user32.EnumWindows(visit, 0)
+    return found
+
+
+def window_title(hwnd: int) -> str:
+    title = ctypes.create_unicode_buffer(1024)
+    user32.GetWindowTextW(hwnd, title, 1024)
+    return title.value
+
+
+def window_contains(hwnd: int, x: int, y: int) -> bool:
+    rect = wintypes.RECT()
+    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+    return rect.left <= x < rect.right and rect.top <= y < rect.bottom
+
+
+def mouse_lparam(x: int, y: int) -> int:
+    return ((y & 0xFFFF) << 16) | (x & 0xFFFF)
+
+
+def key_lparam(vk: int, up: bool = False, alt: bool = False) -> int:
+    lparam = 1 | (user32.MapVirtualKeyW(vk, 0) << 16)
+    if vk in EXTENDED_KEYS:
+        lparam |= 1 << 24
+    if alt:
+        lparam |= 1 << 29
+    if up:
+        lparam |= (1 << 30) | (1 << 31)
+    return lparam
+
+
+class WindowInput:
+    """Input for one tab, through its Firefox window: `async with WindowInput(prep) as win:`
+
+    prep is what the content script answered: where the page's viewport sits
+    on screen ("screen": x, y in CSS pixels, dpr, title) and, for an element,
+    its middle in the viewport ("point"). The methods match BidiSession's, so
+    the tools hand either one the same steps.
+    """
+
+    def __init__(self, prep: Dict[str, Any]):
+        if not AVAILABLE:
+            raise WindowInputUnavailable('Window input works on Windows only')
+        screen = prep.get('screen')
+        if not screen:
+            raise WindowInputUnavailable('The page did not say where it is on screen')
+        self.origin = (screen['x'], screen['y'])
+        self.dpr = screen['dpr'] or 1
+        self.title = screen.get('title') or ''
+        self.point = prep.get('point')
+        self.hwnd = 0
+        self.thread = 0
+        self.buttons = 0
+        self.attached = False
+
+    async def __aenter__(self):
+        x, y = self.screen_point(0, 0)
+        windows = [hwnd for hwnd in firefox_windows() if window_contains(hwnd, x, y)]
+        # Firefox names its window after the page showing in it, which picks
+        # the right one when two Firefox windows overlap there
+        titled = [hwnd for hwnd in windows if self.title and window_title(hwnd).startswith(self.title)]
+        hwnd = (titled or windows or [0])[0]
+        if not hwnd:
+            raise WindowInputUnavailable("The tab's Firefox window was not found (minimised?)")
+        self.hwnd = hwnd
+        self.thread = user32.GetWindowThreadProcessId(hwnd, None)
+        return self
+
+    async def __aexit__(self, *exc):
+        self.release()
+
+    # Positions
+
+    def screen_point(self, x: float, y: float):
+        return round((self.origin[0] + x) * self.dpr), round((self.origin[1] + y) * self.dpr)
+
+    def client_point(self, x: float, y: float):
+        sx, sy = self.screen_point(x, y)
+        point = wintypes.POINT(sx, sy)
+        user32.ScreenToClient(self.hwnd, ctypes.byref(point))
+        return point.x, point.y
+
+    def post(self, message: int, wparam: int, lparam: int):
+        if not user32.PostMessageW(self.hwnd, message, wparam, lparam):
+            raise RuntimeError(f'Firefox did not take the input (error {ctypes.get_last_error()})')
+
+    def hold(self, keys: List[int]):
+        """Make Firefox's input thread see exactly these keys and buttons held,
+        until release(). This thread stays joined to Firefox's input queue
+        meanwhile: the state set while joined does not outlast the join."""
+        if not self.attached:
+            if not user32.AttachThreadInput(kernel32.GetCurrentThreadId(), self.thread, True):
+                raise RuntimeError('Could not reach Firefox to hold the modifier keys')
+            self.attached = True
+        state = (ctypes.c_ubyte * 256)()
+        user32.GetKeyboardState(state)
+        for vk in (VK_LBUTTON, VK_RBUTTON, *MODIFIERS.values(), *(v for vs in SIDES.values() for v in vs)):
+            state[vk] = 0
+        for vk in keys:
+            state[vk] = 0x80
+            for side in SIDES.get(vk, ())[:1]:
+                state[side] = 0x80
+        user32.SetKeyboardState(state)
+
+    def release(self):
+        if self.attached:
+            self.hold([])
+            user32.AttachThreadInput(kernel32.GetCurrentThreadId(), self.thread, False)
+            self.attached = False
+
+    # The BidiSession interface
+
+    async def find_tab(self, token: str):
+        return self.hwnd
+
+    async def element(self, context, selector: str):
+        if not self.point:
+            raise RuntimeError(f'No element matches {selector}')
+        return self.point
+
+    async def move(self, x: float, y: float):
+        cx, cy = self.client_point(x, y)
+        self.post(WM_MOUSEMOVE, self.buttons, mouse_lparam(cx, cy))
+        await asyncio.sleep(STEP_S / 3)
+
+    async def click_at(self, context, x: float, y: float, button: int = 0, clicks: int = 1):
+        await self.move(x, y)
+        cx, cy = self.client_point(x, y)
+        down, up, flag, vk = ((WM_RBUTTONDOWN, WM_RBUTTONUP, MK_RBUTTON, VK_RBUTTON) if button == 2
+                              else (WM_LBUTTONDOWN, WM_LBUTTONUP, MK_LBUTTON, VK_LBUTTON))
+        for n in range(clicks):
+            self.post(WM_LBUTTONDBLCLK if n and button != 2 else down, flag, mouse_lparam(cx, cy))
+            await asyncio.sleep(STEP_S)
+            self.post(up, 0, mouse_lparam(cx, cy))
+            await asyncio.sleep(STEP_S)
+
+    async def click(self, context, element: Dict[str, float], button: int = 0, clicks: int = 1):
+        await self.click_at(context, element['x'], element['y'], button, clicks)
+
+    async def hover(self, context, x: float, y: float):
+        for i in range(1, HOVER_STEPS + 1):
+            await self.move(x - (HOVER_STEPS - i) * 2, y)
+
+    async def drag(self, context, start: Dict[str, float], end: Dict[str, float]):
+        await self.move(start['x'], start['y'])
+        self.buttons = MK_LBUTTON
+        self.hold([VK_LBUTTON])
+        cx, cy = self.client_point(start['x'], start['y'])
+        self.post(WM_LBUTTONDOWN, MK_LBUTTON, mouse_lparam(cx, cy))
+        await asyncio.sleep(DRAG_HOLD_S)
+        for i in range(1, DRAG_STEPS + 1):
+            t = i / DRAG_STEPS
+            eased = t * t * t * (10 - 15 * t + 6 * t * t)  # minimum jerk
+            await self.move(start['x'] + (end['x'] - start['x']) * eased,
+                            start['y'] + (end['y'] - start['y']) * eased)
+            await asyncio.sleep(DRAG_S / DRAG_STEPS)
+        await asyncio.sleep(DRAG_HOLD_S)
+        cx, cy = self.client_point(end['x'], end['y'])
+        self.buttons = 0
+        self.post(WM_LBUTTONUP, 0, mouse_lparam(cx, cy))
+        await asyncio.sleep(STEP_S)
+        self.release()
+
+    async def press(self, context, combo: str):
+        """A key, or a combination such as "Control+a" or "Shift+Tab" """
+        names = [part for part in combo.split('+') if part] if len(combo) > 1 else [combo]
+        *modifier_names, key = names
+        modifiers = []
+        for name in modifier_names:
+            if name not in MODIFIERS:
+                raise ValueError(f'Unknown key "{name}"')
+            modifiers.append(MODIFIERS[name])
+        if key in MODIFIERS:
+            modifiers.append(MODIFIERS[key])
+            vk = None
+        elif key in SPECIAL_KEYS:
+            vk = SPECIAL_KEYS[key]
+        elif len(key) == 1 and not {VK_CONTROL, VK_MENU, VK_LWIN} & set(modifiers):
+            # A character on its own types it, whatever the keyboard layout
+            await self.type_text(context, key)
+            return
+        elif len(key) == 1 and key.isascii() and key.isalnum():
+            # Fixed codes for shortcuts: asking the keyboard layout would fail
+            # for "a" when it is a Hebrew or Russian one
+            vk = ord(key.upper())
+        elif len(key) == 1:
+            scan = user32.VkKeyScanW(ord(key))
+            if scan == -1 or (scan & 0xFF) == 0xFF:
+                raise ValueError(f'No key types "{key}" on this keyboard layout')
+            vk = scan & 0xFF
+        else:
+            raise ValueError(f'Unknown key "{key}"')
+        alt = VK_MENU in modifiers
+        if modifiers:
+            self.hold(modifiers)
+        try:
+            # Only key downs and ups: Windows makes the WM_CHAR for Enter, Tab
+            # and the rest (TranslateMessage) and queues it behind whatever is
+            # waiting. Firefox looks for it right after the key down, so the
+            # key up waits until it is there; queued behind the key up, it would
+            # type a second time (two line breaks for one Enter).
+            for mod in modifiers:
+                self.post(WM_SYSKEYDOWN if alt else WM_KEYDOWN, mod, key_lparam(mod, alt=alt))
+            if vk is not None:
+                self.post(WM_SYSKEYDOWN if alt else WM_KEYDOWN, vk, key_lparam(vk, alt=alt))
+                await asyncio.sleep(STEP_S)
+                self.post(WM_SYSKEYUP if alt else WM_KEYUP, vk, key_lparam(vk, up=True, alt=alt))
+            for mod in reversed(modifiers):
+                self.post(WM_SYSKEYUP if alt and mod != VK_MENU else WM_KEYUP, mod, key_lparam(mod, up=True))
+            await asyncio.sleep(MODIFIER_HOLD_S if modifiers else STEP_S)
+        finally:
+            self.release()
+
+    async def type_text(self, context, text: str):
+        # Firefox drops characters outside the Basic Multilingual Plane (emoji)
+        # that arrive as window messages, however they are sent, so such text
+        # goes through another way before any of it is typed
+        if any(ord(char) > 0xFFFF for char in text):
+            raise WindowInputUnavailable('Emoji cannot be typed through window messages')
+        # A line break goes in as Shift+Enter, as in bidi.py: a plain Enter
+        # sends the message in chat boxes
+        sent = 0
+        for char in text:
+            if char == '\n':
+                await self.press(context, 'Shift+Enter')
+                continue
+            self.post(WM_CHAR, ord(char), 1)
+            sent += 1
+            if sent % CHARS_PER_BATCH == 0:
+                await asyncio.sleep(STEP_S)
+        await asyncio.sleep(STEP_S)
+

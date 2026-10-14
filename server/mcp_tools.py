@@ -28,8 +28,10 @@ from fastmcp.exceptions import ToolError
 
 try:
     from .bidi import LIKELY_PORTS, BidiSession, BidiUnavailable, listening_ports
+    from .win_input import AVAILABLE as WINDOW_INPUT, WindowInput, WindowInputUnavailable
 except ImportError:
     from bidi import LIKELY_PORTS, BidiSession, BidiUnavailable, listening_ports
+    from win_input import AVAILABLE as WINDOW_INPUT, WindowInput, WindowInputUnavailable
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -2011,32 +2013,59 @@ class FoxMCPTools:
             return upload_id, None
 
         async def real_input(tab_id, ref, selector, purpose, act, prep_message=None):
-            """Do act(bidi, context, element) with real input, when the browser has it
+            """Do act(backend, context, element) with real input, when the browser has it
 
             Returns None when the browser has no real input (or it is not
             reachable), so the caller falls back to synthetic events; otherwise
             (prep, None) or (None, error). The content script's prep step goes
-            first: it moves the on-page cursor, marks the tab for BiDi to find,
-            and goes through the person's settings (pause, permissions, blocked
-            sites) like any other action, so real input cannot get round them.
+            first: it moves the on-page cursor, says where the page is on screen,
+            marks the tab for BiDi to find, and goes through the person's
+            settings (pause, permissions, blocked sites) like any other action,
+            so real input cannot get round them.
+
+            On Windows the input is posted to the tab's Firefox window
+            (win_input.py), which needs no remote control; elsewhere, or when
+            that window is not found, it goes through WebDriver BiDi.
             """
             server = self.websocket_server
-            if not getattr(server, 'real_input_allowed', lambda: False)():
+            if not getattr(server, 'real_input_enabled', lambda: False)():
                 return None
-            ports = server.real_input_ports()
-            if not ports:
-                # No port set and none found yet: the usual ones that are open
-                ports = await listening_ports(LIKELY_PORTS)
-            if not ports:
+            ports = []
+            if server.real_input_allowed():
+                ports = server.real_input_ports()
+                if not ports:
+                    # No port set and none found yet: the usual ones that are open
+                    ports = await listening_ports(LIKELY_PORTS)
+            if not WINDOW_INPUT and not ports:
                 return None
             token = uuid.uuid4().hex
-            prep, error = await page_request(prep_message(token) if prep_message else {
+            message = prep_message(token) if prep_message else {
                 "action": "content.real_input_prep",
                 "data": {"tabId": tab_id, "ref": ref, "selector": selector,
                          "purpose": purpose, "token": token}
-            })
+            }
+            # Window messages reach only the tab showing in its window
+            message["data"]["activate"] = WINDOW_INPUT
+            prep, error = await page_request(message)
             if error:
                 return None, error
+
+            async def run(backend, context):
+                if prep_message:
+                    await act(backend, context, prep)
+                else:
+                    element = await backend.element(context, prep["selector"]) if prep.get("selector") else None
+                    await act(backend, context, element)
+                return prep, None
+
+            if WINDOW_INPUT:
+                try:
+                    async with WindowInput(prep) as window:
+                        return await run(window, window.hwnd)
+                except WindowInputUnavailable as unavailable:
+                    logger.info(f"No window input: {unavailable}")
+                except (RuntimeError, ValueError) as failure:
+                    return None, str(failure)
             # Only the Firefox holding this tab finds the token, so with several
             # profiles under remote control the right one picks itself
             for port in ports:
@@ -2044,17 +2073,13 @@ class FoxMCPTools:
                     async with BidiSession(port) as bidi:
                         context = await bidi.find_tab(token)
                         server.real_input_found_on(port)
-                        if prep_message:
-                            await act(bidi, context, prep)
-                        else:
-                            element = await bidi.element(context, prep["selector"]) if prep.get("selector") else None
-                            await act(bidi, context, element)
-                        return prep, None
+                        return await run(bidi, context)
                 except BidiUnavailable as unavailable:
                     logger.info(f"Real input not on port {port}: {unavailable}")
                 except (RuntimeError, ValueError, asyncio.TimeoutError) as failure:
                     return None, str(failure)
-            server.real_input_found_on(0)
+            if ports:
+                server.real_input_found_on(0)
             return None
 
         def spot(tab_id, ref=None, selector=None, x=None, y=None, side=""):
@@ -2065,7 +2090,7 @@ class FoxMCPTools:
 
         async def real_pointer(tab_id, purpose, start, end, act):
             """Real hover, point click or drag: the content script moves the
-            cursor and says where in the viewport, BiDi does the rest"""
+            cursor and says where in the viewport, the server does the rest"""
             return await real_input(tab_id, None, None, purpose, act, prep_message=lambda token: {
                 "action": "content.real_pointer_prep",
                 "data": {"tabId": tab_id, "from": start, "to": end, "purpose": purpose, "token": token}})

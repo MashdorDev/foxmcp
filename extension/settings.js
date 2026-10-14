@@ -34,6 +34,7 @@ const SETTINGS_DEFAULTS = {
   cursorEnabled: true,
   cursorMotion: 'human',
   cursorSpeed: 'normal',
+  cursorIdleMotion: true,
   typingAnimated: true,
   tabMarker: true,
   overlayColor: '#d97757',

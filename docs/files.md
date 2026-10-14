@@ -41,7 +41,8 @@ foxmcp/
 │   ├── requirements.txt # Python dependencies
 │   ├── server.py       # WebSocket server implementation with ping-pong
 │   ├── mcp_tools.py    # FastMCP tool definitions and handlers
-│   └── bidi.py         # WebDriver BiDi client for real mouse and keyboard input
+│   ├── bidi.py         # WebDriver BiDi client for real mouse and keyboard input
+│   └── win_input.py    # Real input on Windows through window messages
 ├── predefined-ex/     # Example predefined scripts
 └── tests/             # Test suite directory
     ├── conftest.py    # Pytest configuration and fixtures
@@ -91,7 +92,7 @@ foxmcp/
 ### `settings.js`
 - **Purpose**: The settings a person can change, and their defaults
 - **Key Features**:
-  - `SETTINGS_DEFAULTS`: every setting with its default (pause, the ten permission groups, blocked sites, private windows, follow, idle release, overlay, cursor, typing, colour, badge, browser name, session ports, real input)
+  - `SETTINGS_DEFAULTS`: every setting with its default (pause, the ten permission groups, blocked sites, private windows, follow, idle release, overlay, cursor and its idle motion, typing, colour, badge, browser name, session ports, real input)
   - `ACTION_PERMISSIONS`: which permission group each protocol action needs; actions not listed are always allowed
   - `PERMISSION_NAMES`: the names shown on the settings page and in refusals
   - `loadSettings()` and the blocked-site matching (`isBlockedHost`), which also blocks subdomains
@@ -213,7 +214,7 @@ foxmcp/
   - **30-second default timeout** for extension responses (`send_request_and_wait`)
   - **Failures as MCP errors**: a result that reads as a failure is raised as a `ToolError`, so the client sees `isError`
   - **Optional `status` argument** on the tools that act in a tab, shown on the page's overlay
-  - **Real input**: click, hover, drag, type and press-key tools use `bidi.py` when Firefox has remote control, and scripted events otherwise
+  - **Real input**: click, hover, drag, type and press-key tools use `win_input.py` on Windows, `bidi.py` when Firefox has remote control, and scripted events otherwise
   - **Predefined Script Execution System**:
     - `content_execute_predefined()` - Execute external scripts that generate JavaScript
     - **Environment variable configuration**: `FOXMCP_EXT_SCRIPTS` directory path
@@ -222,6 +223,14 @@ foxmcp/
     - **External script execution**: Subprocess execution with 30-second timeout
     - **JavaScript injection**: Generated script output executed in browser tabs
     - **Comprehensive error handling**: Script validation, execution, and browser injection errors
+
+### `win_input.py`
+- **Purpose**: Real (trusted) mouse and keyboard input on Windows without remote control
+- **Key Features**:
+  - Finds the tab's Firefox window by where the page sits on screen (`mozInnerScreenX/Y` times `devicePixelRatio`) and its title
+  - Posts `WM_MOUSEMOVE`, button and key messages; the person's pointer does not move and the window may be behind others
+  - Joins Firefox's input thread for the length of a key combination to set the modifier state
+  - Text goes in as `WM_CHAR` messages, line breaks as Shift+Enter; text with emoji is handed to the other paths
 
 ### `bidi.py`
 - **Purpose**: Real (trusted) mouse and keyboard input through WebDriver BiDi
@@ -234,7 +243,7 @@ foxmcp/
 ## Packaging and Plugin
 
 ### `pyproject.toml`
-- **Purpose**: Makes the server an installable Python package, so `uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.8.1 mcp-bridge-for-firefox --stdio` runs it with no clone
+- **Purpose**: Makes the server an installable Python package, so `uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.9.0 mcp-bridge-for-firefox --stdio` runs it with no clone
 - **Key Features**: Python 3.10 or newer; the code in `server/` is installed as the `mcp_bridge_for_firefox` package; the `mcp-bridge-for-firefox` command runs `server.run`
 
 ### `.claude-plugin/marketplace.json`

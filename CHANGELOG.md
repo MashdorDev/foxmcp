@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-10-14
+
+### Added
+- **Real input on Windows without remote control.** The server posts mouse and key messages straight to the tab's Firefox window, which turns them into trusted events. Firefox no longer needs `--remote-debugging-port`, so pages no longer see `navigator.webdriver` (ChatGPT had started showing a Cloudflare check), the person's mouse pointer never moves, and the window can stay behind others. The tab is brought to the front of its window first. Shortcuts such as `Alt+2` and `Control+a` work; text with emoji falls back to remote control or scripted typing. On other systems real input still goes through WebDriver BiDi.
+- **The agent's cursor moves like a resting hand between actions.** It mostly stays put, now and then drifts a little, and while the agent reads it follows the lines, after studies of the pointer during reading and search. Only the drawn cursor moves; pages get no mouse events. "Move the cursor like a resting hand" on the settings page turns it off.
+
 ## [1.8.1] - 2026-10-14
 
 ### Added
