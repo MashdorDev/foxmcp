@@ -904,6 +904,8 @@ const AGENT_ACTIVITY = {
   'content.upload_begin': ['waiting', 'Uploading a file'],
   'content.upload_chunk': ['waiting', 'Uploading a file'],
   'content.upload_finish': ['waiting', 'Uploading a file'],
+  'content.copy_image': ['reading', 'Copying an image'],
+  'content.paste': ['typing', 'Pasting'],
   'navigation.go_to_url': ['waiting', 'Opening a page'],
   'navigation.back': ['waiting', 'Going back'],
   'navigation.forward': ['waiting', 'Going forward'],
@@ -1104,12 +1106,72 @@ async function handleContentAction(id, action, data) {
         break;
       }
 
+      // "Copy Image": an image on a page, or a file sent the way uploads are,
+      // goes on the system clipboard as PNG, ready for content.paste or for
+      // the person to paste with Ctrl+V.
+      case 'content.copy_image': {
+        let blob;
+        let source;
+        if (data.uploadId) {
+          const upload = pendingUploads.get(data.uploadId);
+          pendingUploads.delete(data.uploadId);
+          if (!upload) {
+            sendError(id, 'UPLOAD_ERROR', `Unknown upload ${data.uploadId}`);
+            break;
+          }
+          blob = new Blob(upload[0].parts, { type: upload[0].type || '' });
+          source = upload[0].name;
+        } else {
+          const image = await sendMessageWithRetry(data.tabId, { action: 'imageSource', data });
+          if (image && image.error) {
+            sendError(id, 'PAGE_ERROR', image.error);
+            break;
+          }
+          if (image.bytes) {
+            blob = new Blob([image.bytes]);
+          } else {
+            const response = await fetch(image.src, { credentials: 'include' });
+            if (!response.ok) {
+              sendError(id, 'FETCH_ERROR', `Could not load the image (${response.status}): ${image.src}`);
+              break;
+            }
+            blob = await response.blob();
+          }
+          source = image.target;
+        }
+        const png = await imageAsPng(blob);
+        await browser.clipboard.setImageData(png.bytes, 'png');
+        sendResponse(id, action, { copied: source, width: png.width, height: png.height });
+        break;
+      }
+
+      case 'content.paste': {
+        const pageResult = await sendMessageWithRetry(data.tabId, { action: 'paste', data });
+        if (pageResult && pageResult.error) {
+          sendError(id, 'PAGE_ERROR', pageResult.error);
+        } else {
+          sendResponse(id, action, pageResult);
+        }
+        break;
+      }
+
       default:
         sendError(id, 'UNKNOWN_ACTION', `Unknown content action: ${action}`);
     }
   } catch (error) {
     sendError(id, 'API_ERROR', `Content API error: ${error.message}`);
   }
+}
+
+// The clipboard takes PNG or JPEG only, so a WebP or GIF is redrawn as PNG
+async function imageAsPng(blob) {
+  const bitmap = await createImageBitmap(blob);
+  const canvas = document.createElement('canvas');
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext('2d').drawImage(bitmap, 0, 0);
+  const png = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+  return { bytes: await png.arrayBuffer(), width: bitmap.width, height: bitmap.height };
 }
 
 // Navigation handlers

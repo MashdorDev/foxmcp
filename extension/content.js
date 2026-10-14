@@ -114,9 +114,22 @@ const TYPE_STEP_MS = 25;
 
 // Focusing an editable element does not put the caret inside it, and
 // insertText with no caret in the element is refused.
+//
+// The caret goes at the end of the last text, not at the end of the element:
+// after the last <p> of a ProseMirror editor (ChatGPT) each piece typed there
+// became a paragraph of its own, splitting words across lines.
 function caretToEnd(el) {
   const range = document.createRange();
-  range.selectNodeContents(el);
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let last = null;
+  while (walker.nextNode()) last = walker.currentNode;
+  if (last) {
+    range.setStart(last, last.length);
+  } else {
+    let deepest = el;
+    while (deepest.lastElementChild && deepest.lastElementChild.tagName !== 'BR') deepest = deepest.lastElementChild;
+    range.selectNodeContents(deepest);
+  }
   range.collapse(false);
   const selection = window.getSelection();
   selection.removeAllRanges();
@@ -135,7 +148,10 @@ async function typeInto(el, text, clear) {
   } else if (el.isContentEditable) {
     caretToEnd(el);
   }
-  const size = Math.max(1, Math.ceil(text.length * TYPE_STEP_MS / TYPE_ANIMATION_MS));
+  // In a hidden tab the text goes in at once: nobody is watching, and Firefox
+  // throttles its timers so hard that a 300-character text took minutes.
+  const size = document.hidden ? Math.max(1, text.length)
+    : Math.max(1, Math.ceil(text.length * TYPE_STEP_MS / TYPE_ANIMATION_MS));
   const pieces = [];
   for (let i = 0; i < text.length; i += size) pieces.push(text.slice(i, i + size));
   if (pieces.length === 0) pieces.push('');
@@ -243,6 +259,11 @@ async function setInputFiles(el, files, relativePaths) {
   if (el.tagName !== 'INPUT' || el.type !== 'file') {
     throw new Error('Target must be an <input type=file>');
   }
+  // A page ignores files set on a disabled input (ChatGPT's, while it loads),
+  // so setting them would report success with nothing attached.
+  if (el.disabled) {
+    throw new Error('The file input is disabled; wait for the page to finish loading and try again');
+  }
   // Files built in the extension belong to it, and the page gets "Permission
   // denied" reading them. Each one is rebuilt in the page from its bytes and set
   // through the page's own DataTransfer, so it is an ordinary file as far as the
@@ -295,6 +316,12 @@ let agentLabel = OVERLAY_LABEL;
 
 function overlayRoot() {
   let host = document.getElementById(OVERLAY_ID);
+  // An overlay left by an older version of the add-on, from before it was
+  // updated in a tab that stayed open, lacks the parts this one drives.
+  if (host && !host.shadowRoot?.querySelector('.pointer .badge')) {
+    host.remove();
+    host = null;
+  }
   if (!host) {
     host = document.createElement('div');
     host.id = OVERLAY_ID;
@@ -504,7 +531,8 @@ async function moveCursorTo(el, press) {
   pointer.getBoundingClientRect();
   pointer.style.transition = `transform ${CURSOR_MOVE_MS}ms cubic-bezier(.3,.7,.4,1)`;
   pointer.style.transform = `translate(${to.x}px, ${to.y}px)`;
-  await new Promise(resolve => setTimeout(resolve, CURSOR_MOVE_MS));
+  // Nobody sees a hidden tab, and Firefox holds its timers back for seconds
+  if (!document.hidden) await new Promise(resolve => setTimeout(resolve, CURSOR_MOVE_MS));
   if (press) {
     const ripple = document.createElement('div');
     ripple.className = 'ripple';
@@ -617,6 +645,61 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         setInputFiles(el, data.files, data.relativePaths || [])
           .then(paths => sendResponse({ count: paths.length, paths: paths.slice(0, 5), target: describe(el) }))
           .catch(error => sendResponse({ error: error.message }));
+        break;
+      }
+
+      // The bytes of an image on the page, for "Copy Image". Read with the
+      // page's own fetch so a same-origin image comes with the page's cookies
+      // and a blob: URL resolves; a cross-origin one the page may not read is
+      // left to the background script, by its URL.
+      case 'imageSource': {
+        const el = findTarget(data);
+        const img = el.tagName === 'IMG' ? el : el.querySelector('img');
+        if (!img) {
+          sendResponse({ error: `${describe(el)} is not an image and holds none` });
+          break;
+        }
+        showOverlay('reading');
+        moveCursorTo(img, false)
+          .then(() => window.wrappedJSObject.fetch(img.currentSrc || img.src))
+          .then(response => response.ok ? response.arrayBuffer() : null)
+          // copied out of the page's realm, so the message can carry it
+          .then(buffer => buffer && new Uint8Array(buffer).slice().buffer)
+          .catch(() => null)
+          .then(bytes => sendResponse({ src: img.currentSrc || img.src, bytes, target: describe(img) }));
+        break;
+      }
+
+      // A real paste of the clipboard into the element given, or into the
+      // page. The page gets a trusted paste event carrying what is on the
+      // clipboard, as from Ctrl+V; a synthetic event with the same data is
+      // ignored by canvas apps such as Miro.
+      //
+      // Firefox runs a content script's paste only into a <textarea>. For any
+      // other target, or none, a textarea is added off screen for the moment
+      // of the paste; the paste event bubbles from it to the document, where
+      // canvas apps listen.
+      case 'paste': {
+        const el = data.ref || data.selector ? findTarget(data) : null;
+        const previous = document.activeElement;
+        showOverlay('typing');
+        (el ? moveCursorTo(el, true) : Promise.resolve()).then(() => {
+          let into = el;
+          let scratch = null;
+          if (!(el instanceof HTMLTextAreaElement)) {
+            scratch = document.createElement('textarea');
+            scratch.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;';
+            document.body.appendChild(scratch);
+            into = scratch;
+          }
+          into.focus();
+          const pasted = document.execCommand('paste');
+          if (scratch) {
+            scratch.remove();
+            previous?.focus?.();
+          }
+          sendResponse(pasted ? { pasted: scratch ? 'the page' : describe(el) } : { error: 'Firefox refused the paste' });
+        });
         break;
       }
 
