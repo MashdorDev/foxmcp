@@ -187,13 +187,13 @@ class BidiSession:
             steps += [{'type': 'pointerDown', 'button': button}, {'type': 'pointerUp', 'button': button}]
         await self.pointer(context, steps)
 
-    async def drag(self, context: str, start: Dict[str, int], end: Dict[str, int]):
+    async def drag(self, context: str, start: Dict[str, int], end: Dict[str, int], button: int = 0):
         """Press at start, move to end the way a hand does (slow, fast, slow),
         release. The short holds at each end are what many apps wait for
         before they treat a press as the start of a drag, or a stop as a drop."""
         steps: List[Dict[str, Any]] = [
             {'type': 'pointerMove', 'x': start['x'], 'y': start['y'], 'duration': 0, 'origin': 'viewport'},
-            {'type': 'pointerDown', 'button': 0},
+            {'type': 'pointerDown', 'button': button},
             {'type': 'pause', 'duration': DRAG_HOLD_MS}]
         for i in range(1, DRAG_STEPS + 1):
             t = i / DRAG_STEPS
@@ -201,7 +201,7 @@ class BidiSession:
             steps.append({'type': 'pointerMove', 'origin': 'viewport', 'duration': DRAG_MS // DRAG_STEPS,
                           'x': round(start['x'] + (end['x'] - start['x']) * eased),
                           'y': round(start['y'] + (end['y'] - start['y']) * eased)})
-        steps += [{'type': 'pause', 'duration': DRAG_HOLD_MS}, {'type': 'pointerUp', 'button': 0}]
+        steps += [{'type': 'pause', 'duration': DRAG_HOLD_MS}, {'type': 'pointerUp', 'button': button}]
         await self.pointer(context, steps)
 
     async def keys(self, context: str, steps: List[Dict[str, Any]]):

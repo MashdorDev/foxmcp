@@ -108,6 +108,15 @@ async def test_a_drag_presses_moves_in_steps_and_releases():
 
 
 @pytest.mark.asyncio
+async def test_a_middle_button_drag_presses_and_releases_the_middle_button():
+    session = RecordingSession()
+    await session.drag('ctx', {'x': 10, 'y': 20}, {'x': 210, 'y': 120}, button=1)
+    steps = pointer_steps(session)
+    assert steps[1] == {'type': 'pointerDown', 'button': 1}
+    assert steps[-1] == {'type': 'pointerUp', 'button': 1}
+
+
+@pytest.mark.asyncio
 async def test_a_point_click_happens_where_it_was_asked():
     session = RecordingSession()
     await session.click_at('ctx', 300, 40, button=2)
