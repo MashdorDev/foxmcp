@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-10-14
+
 ### Added
 - **The person's clipboard stays theirs.** Paste keys and `content_paste` go through only while the clipboard holds what the agent itself copied; otherwise they fail and say why. Copy keys report whether anything was copied. On Windows the server compares the clipboard's change counter, which never reveals the contents; elsewhere the add-on compares a hash. A failed copy followed by a paste had put the person's own messages on a shared Miro board. `allow_clipboard=True` pastes the person's clipboard when they ask for it.
 - **Click, hover and type by what a person sees.** `content_click(text=...)`, `content_hover(text=...)` and `content_type(field=...)` find the element by its label, aria-label, placeholder or text.

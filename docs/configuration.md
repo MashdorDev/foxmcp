@@ -28,7 +28,7 @@ Code starts it in every session.
 **Register the server directly** (needs uv):
 
 ```bash
-claude mcp add firefox -- uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.10.0 mcp-bridge-for-firefox --stdio
+claude mcp add firefox -- uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.11.0 mcp-bridge-for-firefox --stdio
 ```
 
 `uvx` downloads the tagged release, installs it as a Python package (see
@@ -44,7 +44,7 @@ VS Code) take the same command:
   "mcpServers": {
     "firefox": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.10.0", "mcp-bridge-for-firefox", "--stdio"]
+      "args": ["--from", "git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.11.0", "mcp-bridge-for-firefox", "--stdio"]
     }
   }
 }
@@ -607,7 +607,7 @@ To keep profiles fully apart instead, give each its own port in the options page
 and run one server per port, each as its own MCP entry:
 
 ```bash
-claude mcp add firefox-work -- uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.10.0 mcp-bridge-for-firefox --stdio --port 8775
+claude mcp add firefox-work -- uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.11.0 mcp-bridge-for-firefox --stdio --port 8775
 ```
 
 Pick a port outside 8765 to 8769, which the first entry's sessions use (see
