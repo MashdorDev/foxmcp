@@ -4,7 +4,7 @@ Complete reference for all MCP tools and browser functions available through Fox
 
 ## Available MCP Tools
 
-All 46 tools are offered by default. Each section below corresponds to a *group*
+All 51 tools are offered by default. Each section below corresponds to a *group*
 that `--disable-tools` can leave unregistered, which is how you shrink what an MCP
 client carries in its context. The group name is the tool-name prefix, not the
 heading: Tab Management is `tabs`, Web Request Monitoring is `requests`, Debugging
@@ -14,6 +14,24 @@ tool out of a group you disabled. See
 [configuration.md](configuration.md#reducing-the-tool-surface) for the full list
 and what each group costs.
 
+### Errors
+
+A tool that fails is reported to the client as an MCP error: the result has
+`isError` set, and its text says what went wrong, usually with the extension's own
+reason ("Failed to type: ...", or a refusal such as `"Click, type and press keys"
+is turned off in this browser's MCP Bridge settings.`). Clients that check
+`isError` stop there instead of moving on after a step that never happened.
+
+### The `status` argument
+
+The 20 tools that act in a tab take an optional `status`: a few words in the
+first person, such as `"Reading the board"`, shown on the overlay of the tab the
+agent works in. It is cut at 80 characters. Without one, the overlay names the
+action ("Reading this page"). The tools are `tabs_create`, `tabs_close`,
+`tabs_switch`, `tabs_release`, `navigation_reload`, `navigation_go_to_url`, every
+`content_*` tool and `requests_start_monitoring`. The other tools do not offer
+it, which keeps the tool list shorter.
+
 ### Tab Management
 - `tabs_list(window_id=None)` - List open tabs, in every window or in one window
   - Each line ends with `[window {window_id}, index {index}]`; the index is the tab's
@@ -21,11 +39,15 @@ and what each group costs.
 - `tabs_create(url, active=True, pinned=False, window_id=None)` - Create new tab (optionally in specific window)
 - `tabs_close(tab_id)` - Close specific tab
 - `tabs_switch(tab_id)` - Switch to specific tab
+- `tabs_release(tab_id)` - Say the agent is done with a tab, so the overlay, cursor and
+  tab marker leave it
+  - Until then the overlay stays up. It also clears when the agent's session ends, or
+    after the idle time set on the add-on's options page (5 minutes by default)
 - `tabs_move(tab_ids, window_id=None, index=-1)` - Move tabs to a position, optionally into another window
   - `tab_ids` takes one ID, a list, or a JSON string such as `"[12, 15]"`
   - `index` is the destination, counting from 0; `-1` is the end
   - Without `window_id`, tabs are reordered within the window they are in
-  - Reports `Moved {n} of {m}` — Firefox refuses some moves silently, chiefly moving an
+  - Reports `Moved {n} of {m}`: Firefox refuses some moves silently, chiefly moving an
     unpinned tab in front of a pinned one, and a refused tab is absent from the result
 - `tabs_group(tab_ids, group_id=None, title=None, color=None)` - Group tabs into a new group, or into an existing one
   - Without `group_id`, the new group goes in the first tab's window, and tabs from other
@@ -66,12 +88,34 @@ and what each group costs.
 - `content_get_text(tab_id, max_length=None)` - Extract page text content
   - `max_length`: Optional maximum length of text to return (default: unlimited)
 - `content_get_html(tab_id)` - Get page HTML source
-- `content_execute_script(tab_id, script)` - Execute JavaScript directly
+- `content_execute_script(tab_id, code)` - Execute JavaScript directly
 - `content_snapshot(tab_id, max_elements=300)` - List visible interactive elements, each with a ref
-- `content_click(tab_id, ref=None, selector=None, double_click=False)` - Click an element by ref or selector
+- `content_click(tab_id, ref=None, selector=None, double_click=False, right_click=False, x=None, y=None)` - Click an element by ref or selector, or a point
+  - `right_click` opens the page's context menu
+  - `x` and `y` click a point in the visible page (CSS pixels from the top left)
+    instead of an element, for canvases such as a Miro board
+- `content_hover(tab_id, ref=None, selector=None, x=None, y=None)` - Move the mouse onto an element or a point without clicking
+  - Opens hover menus and shows tooltips or buttons that only appear on hover
+- `content_drag(tab_id, from_ref=None, from_selector=None, from_x=None, from_y=None, to_ref=None, to_selector=None, to_x=None, to_y=None)` - Drag from one element or point to another and let go
+  - Each end is an element (`*_ref` or `*_selector`) or a point (`*_x` with `*_y`)
+  - For moving items on a board or canvas, reordering lists, dropping a card in a
+    column, moving sliders
 - `content_type(tab_id, text, ref=None, selector=None, clear=True, submit=False)` - Type into an input or editable element
+  - Checks afterwards that the whole text arrived, and reports a short result as an error
+  - Under real input a line break is typed as Shift+Enter, which adds a line in chat
+    boxes where a plain Enter would send the message
 - `content_press_key(tab_id, key, ref=None, selector=None)` - Press a key on an element, or on the focused one
+  - `key` is a `KeyboardEvent.key` name such as `"Enter"`, `"Escape"` or `"Tab"`;
+    under real input it can also be a combination such as `"Control+a"` or `"Shift+Tab"`
 - `content_upload_files(tab_id, path, ref=None, selector=None, trigger_ref=None, trigger_selector=None)` - Put a local file or folder on a file input; a trigger fills the input a button would open
+- `content_copy_image(tab_id=None, ref=None, selector=None, path=None)` - Put an image on the system clipboard as PNG, as the browser's "Copy Image" does
+  - An image on a page (`tab_id` with `ref` or `selector`), or a local image file (`path`)
+- `content_paste(tab_id, ref=None, selector=None)` - Paste the system clipboard into a page, as Ctrl+V would
+  - The page gets a real paste event carrying the clipboard's text or image. Firefox
+    lets the extension paste only into a textarea; with no target, or another kind,
+    the paste goes to the page as a whole
+  - Miro ignores pastes it did not get from a person. To put an image on a Miro
+    board, use `content_upload_files` on its "Upload from device"
 - `content_execute_predefined(tab_id, script_name, script_args="")` - Execute predefined external scripts
 
 ### Web Request Monitoring
@@ -82,7 +126,7 @@ and what each group costs.
   - Returns JSON with `monitor_id` and monitoring status
 - `requests_stop_monitoring(monitor_id, drain_timeout=5)` - Stop monitoring
   - `monitor_id`: ID of the monitoring session to stop
-  - `drain_timeout`: **ignored** — the monitor stops immediately
+  - `drain_timeout`: **ignored**: the monitor stops immediately
   - Returns JSON with stop status and statistics
   - Captured data outlives the monitor: the two tools below still answer afterwards
 - `requests_list_captured(monitor_id)` - List captured request summaries
@@ -93,10 +137,24 @@ and what each group costs.
     are cleared when the client that started them disconnects, and when the
     extension loses its connection to the server
 - `requests_get_content(monitor_id, request_id, include_binary=False, save_request_body_to=None, save_response_body_to=None)` - Get full request/response content
-  - `include_binary`: **ignored** — non-text bodies never come back as content, only as a size
-  - `save_request_body_to`, `save_response_body_to`: **ignored** — `saved_to_file` is always `null`
+  - `include_binary`: **ignored**: non-text bodies never come back as content, only as a size
+  - `save_request_body_to`, `save_response_body_to`: **ignored**: `saved_to_file` is always `null`
   - Returns JSON with response headers and both bodies. `request_headers` is always
     empty: no listener collects them
+
+#### Real input
+
+`content_click`, `content_hover`, `content_drag`, `content_type` and
+`content_press_key` send real mouse and keyboard input through Firefox's remote
+control (WebDriver BiDi) when Firefox was started with
+`--remote-debugging-port` and real input is on in the add-on's settings. Pages
+cannot tell those events from a person's, so canvas apps and menus that ignore
+scripted events accept them. The result then ends in `(real input)`. When Firefox
+has no remote control, the same tools fall back to events dispatched by script.
+`content_drag` on a page's own HTML5 drag-and-drop (draggable elements, links,
+images) always uses the scripted drag, because Firefox's remote control starts
+that kind of drag but never drops. See
+[configuration.md](configuration.md#real-input-webdriver-bidi).
 
 See [web-request-monitoring.md](web-request-monitoring.md) for the options, the
 pattern syntax, where captured data lives, and the full list of parameters that are
@@ -107,12 +165,12 @@ accepted and ignored.
 The `webRequest` API does not expose response bodies, so the extension taps the
 response stream itself with `webRequest.filterResponseData`. That covers every
 matching request, the document load included, and Firefox has already undone any
-`Content-Encoding` by the time the bytes arrive — so what you get back is the
+`Content-Encoding` by the time the bytes arrive, so what you get back is the
 real body, not a compressed one.
 
 **You get a body only if you asked for its content type.** `content` is filled
 in when the response is text *and* its content type matches
-`content_types_to_capture` — which defaults to
+`content_types_to_capture`, which defaults to
 `["application/json", "text/plain"]`. An HTML page therefore returns no content
 unless you pass `content_types_to_capture: ["text/html"]`. Binary responses
 never return content, whatever you pass. In every one of these cases `included`
@@ -255,8 +313,24 @@ text = await client.call_tool("content_get_text", {
 # Execute JavaScript
 result = await client.call_tool("content_execute_script", {
     "tab_id": 123,
-    "script": "document.title"
+    "code": "document.title"
 })
+
+# Click a point on a canvas, saying what the agent is doing
+await client.call_tool("content_click", {
+    "tab_id": 123, "x": 640, "y": 360, "status": "Selecting the sticky note"
+})
+
+# Drag a card onto a column
+await client.call_tool("content_drag", {
+    "tab_id": 123, "from_ref": "r12", "to_selector": "#done-column"
+})
+
+# Select all in the focused field (real input only)
+await client.call_tool("content_press_key", {"tab_id": 123, "key": "Control+a"})
+
+# Done with the tab: the overlay leaves it
+await client.call_tool("tabs_release", {"tab_id": 123})
 ```
 
 ### Window Management

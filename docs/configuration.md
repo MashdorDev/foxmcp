@@ -1,8 +1,63 @@
 # Server Configuration
 
-Complete guide to configuring and running the FoxMCP server.
+How to set up, run and configure the MCP Bridge for Firefox server and add-on.
 
-## Starting the Server
+## Setup
+
+The server runs inside your AI client, which starts it when a session starts
+and stops it when the session ends. There are three ways to set it up in Claude
+Code.
+
+**Ask Claude Code.** Tell it "Set up MCP Bridge for Firefox from
+github.com/MashdorDev/mcp-bridge-for-firefox". It follows the steps in the
+README: install [uv](https://docs.astral.sh/uv/) if it is missing, then install
+the plugin. The add-on's toolbar popup offers the same request, with a Copy
+button, whenever it has no server to talk to.
+
+**Install the plugin**, from the `/plugin` menu or in a terminal:
+
+```bash
+claude plugin marketplace add MashdorDev/mcp-bridge-for-firefox
+claude plugin install firefox@mcp-bridge-for-firefox
+```
+
+The repo is its own plugin marketplace (`.claude-plugin/marketplace.json`), and
+its one plugin, `firefox` (`claude-plugin/`), registers the server so that Claude
+Code starts it in every session.
+
+**Register the server directly** (needs uv):
+
+```bash
+claude mcp add firefox -- uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.8.1 mcp-bridge-for-firefox --stdio
+```
+
+`uvx` downloads the tagged release, installs it as a Python package (see
+`pyproject.toml`) and runs its `mcp-bridge-for-firefox` command, so there is
+nothing to clone. The plugin runs the same command.
+
+After either, restart Claude Code, or reconnect the server under `/mcp`, for the
+browser tools to appear. Clients that read an `mcp.json` (Cursor, Claude Desktop,
+VS Code) take the same command:
+
+```json
+{
+  "mcpServers": {
+    "firefox": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.8.1", "mcp-bridge-for-firefox", "--stdio"]
+    }
+  }
+}
+```
+
+All of these serve MCP over stdio. [Serving MCP over stdio](#serving-mcp-over-stdio)
+covers what that means for the add-on's connection, and [Several
+sessions](#several-sessions) how two Claude sessions share one browser.
+
+## Starting the Server by Hand
+
+From a clone, for development or to serve MCP over HTTP. `mcp-bridge-for-firefox`,
+the command the package installs, takes the same options as `server/server.py`.
 
 ```bash
 # Quick start (both WebSocket and MCP servers)
@@ -34,31 +89,17 @@ Options:
 
 ## Serving MCP over stdio
 
-By default the server offers MCP over HTTP, which means starting it yourself and
-leaving it running. `--stdio` offers the same tools on stdin and stdout instead,
-so an MCP client can launch the server itself and shut it down again when it
-exits — the way most clients expect to manage a server.
+Started by hand, the server offers MCP over HTTP, which means starting it
+yourself and leaving it running. `--stdio` offers the same tools on stdin and
+stdout instead, so an MCP client can launch the server itself and shut it down
+again when it exits, the way most clients expect to manage a server. Every
+route under [Setup](#setup) uses it.
 
-**Claude Code**, from the directory you want it scoped to:
+To run a clone this way, from the directory you want it scoped to:
 
 ```bash
-claude mcp add --scope project foxmcp -- /path/to/foxmcp/venv/bin/python \
-  /path/to/foxmcp/server/server.py --stdio
-```
-
-which writes a `.mcp.json` any MCP client can read:
-
-```json
-{
-  "mcpServers": {
-    "foxmcp": {
-      "type": "stdio",
-      "command": "/path/to/foxmcp/venv/bin/python",
-      "args": ["/path/to/foxmcp/server/server.py", "--stdio"],
-      "env": {}
-    }
-  }
-}
+claude mcp add --scope project firefox -- /path/to/mcp-bridge-for-firefox/venv/bin/python \
+  /path/to/mcp-bridge-for-firefox/server/server.py --stdio
 ```
 
 Name `venv/bin/python` rather than `python`: the server needs the virtual
@@ -66,8 +107,9 @@ environment's packages, and a client launches the command with its own
 environment, not your shell's. On Windows the interpreter is
 `venv\Scripts\python.exe`.
 
-The extension side does not change. The WebSocket server still listens on 8765,
-the extension still connects to it, and every tool works as it does over HTTP.
+The extension side does not change. The WebSocket server still listens on 8765
+(or the next free port, see [Several sessions](#several-sessions)), the extension
+still connects to it, and every tool works as it does over HTTP.
 Three things are different:
 
 - **No HTTP listener.** Nothing serves port 3000, so `--mcp-port` is refused
@@ -75,34 +117,46 @@ Three things are different:
   stdio mode with nothing to serve.
 - **The server lives as long as the client.** Closing the client ends the
   process, and the next client starts a new one. That has two consequences worth
-  reading before you choose this mode: [One session at a
-  time](#one-session-at-a-time) and [The reconnect gap](#the-reconnect-gap).
+  reading: [Several sessions](#several-sessions) and [The reconnect
+  gap](#the-reconnect-gap).
 - **stdout carries the protocol.** All logging goes to stderr, where your client
   keeps its MCP server logs.
 
-### One session at a time
+### Several sessions
 
-The extension dials a single WebSocket port, so a single server can serve it.
-That is true in either mode. In HTTP mode it is a setup decision you make once.
-Under `--stdio` it becomes a limit on how you work, because every client that
-launches a server launches its own.
+<a id="one-session-at-a-time"></a>
+Every client that launches a server launches its own, so two `claude` sessions in
+two terminals means two servers. The first binds 8765. A server that finds 8765
+taken moves to the first free port of the next four, 8766 to 8769
+(`EXTRA_SERVER_PORTS` in `server/server.py`). On Windows the free-port test asks
+for exclusive use of the port, so a second server cannot quietly share 8765 with
+the first.
 
-Two `claude` sessions in two terminals means two servers. The first binds 8765
-and gets the browser. The second exits with an error naming the port, and that
-client has no browser tools at all:
+The add-on connects to the server on 8765 and, while that connection is up,
+looks for servers on the four ports after it every 15 seconds
+(`scanExtraServers` in `extension/background.js`). Each session gets a connection
+of its own, and each reply goes back on the connection its request came in on,
+so several sessions can use the browser at once:
 
 ```
-terminal 1:  claude  ->  server starts, binds 8765, extension attaches
-terminal 2:  claude  ->  server exits: "Cannot listen on localhost:8765"
+terminal 1:  claude  ->  server binds 8765, add-on connects
+terminal 2:  claude  ->  8765 taken, server binds 8766, add-on connects within 15s
 ```
 
-That is a normal way to work rather than a misconfiguration, and the server
-cannot solve it. A second server on another port would have nothing to serve,
-because the extension is configured to dial one address.
+Three things follow from how this works:
 
-Mixing modes collides the same way: a standing HTTP-mode server holds 8765, so a
-client's `--stdio` server cannot start. If you want several clients at once, run
-one server in HTTP mode and point them all at `http://localhost:3000/mcp/`.
+- **A new session may wait up to 15 seconds.** Until the next scan, its tools
+  answer `No extension connection available`. Run the call again.
+- **The scan runs only while 8765 is connected.** If the session holding 8765
+  ends, the others keep their connections, and the next session to start takes
+  8765 again, since it is free.
+- **Five sessions at once is the limit.** A sixth finds 8765 to 8769 taken and
+  exits with an error naming the port. The add-on's "Other sessions" setting sets
+  how many ports after 8765 it scans (4 by default; 0 connects to 8765 only).
+
+Mixing modes works the same way: a standing HTTP-mode server on 8765 pushes a
+client's `--stdio` server to 8766. To have several clients share one server
+instead, run it in HTTP mode and point them all at `http://localhost:3000/mcp/`.
 
 ### The reconnect gap
 
@@ -174,13 +228,13 @@ the 50-attempt budget. This is the case the example command at the top of this
 section configures, which is why it is worth saying plainly.
 
 If that is how you work, HTTP mode avoids all of it: one server, started once,
-outliving every client and every session, with no port to contend for.
+outliving every client and every session.
 
 ## Reducing the Tool Surface
 
 Every tool's description sits in an MCP client's context for the whole session,
-whether or not the tool is ever called. The full set of 46 tools costs roughly
-7,125 tokens. `--disable-tools` leaves a group unregistered, so a client never
+whether or not the tool is ever called. The full set of 51 tools costs roughly
+9,700 tokens. `--disable-tools` leaves a group unregistered, so a client never
 sees it:
 
 ```bash
@@ -194,14 +248,14 @@ token, so treat them as proportions rather than exact counts:
 
 | Group | Tools | ~Tokens |
 |---|---|---|
-| `tabs` | list, create, close, switch, move, capture_screenshot, group, ungroup, groups_update, groups_query | 2,166 |
-| `content` | get_text, get_html, execute_script, execute_predefined, snapshot, click, type, press_key, upload_files | 1,444 |
-| `windows` | list, get, get_current, create, close, focus, update | 949 |
-| `requests` | start_monitoring, stop_monitoring, list_captured, get_content | 795 |
-| `browsers` | list, select | ~255 |
+| `content` | get_text, get_html, execute_script, execute_predefined, snapshot, click, hover, drag, type, press_key, upload_files, copy_image, paste | 3,462 |
+| `tabs` | list, create, close, switch, release, move, capture_screenshot, group, ungroup, groups_update, groups_query | 2,536 |
+| `windows` | list, get, get_current, create, close, focus, update | 1,028 |
+| `requests` | start_monitoring, stop_monitoring, list_captured, get_content | 853 |
 | `bookmarks` | list, search, create, create_folder, update, delete | 703 |
-| `navigation` | back, forward, reload, go_to_url | 430 |
+| `navigation` | back, forward, reload, go_to_url | 546 |
 | `history` | query, get_recent, delete_item | 304 |
+| `browsers` | list, select | 196 |
 | `debug` | websocket_status | 78 |
 
 All groups are on by default. An unrecognized group name is an error rather than
@@ -209,12 +263,14 @@ a warning, so a typo cannot silently leave the group enabled.
 
 Disabling a group hides its tools; it does not restrict the extension, which
 still holds the same browser permissions. This is a context-size option, not a
-security boundary — see [architecture.md](architecture.md#security-architecture).
+security boundary. To stop the agent from doing something, turn it off on the
+add-on's settings page instead ([What the agent may do](#what-the-agent-may-do)).
+See also [architecture.md](architecture.md#security-architecture).
 
 ### Keeping one tool out of a disabled group
 
 Sometimes a single tool is the reason to keep a group, and the rest of it is
-dead weight — a screenshot of the page, without the nine tab tools that manage
+dead weight: a screenshot of the page, without the ten tab tools that manage
 tabs. `--enable-tools` names tools to register even though their group is
 disabled:
 
@@ -255,36 +311,175 @@ overrides `FOXMCP_ENABLE_TOOLS`, when both are given.
 
 ## Server Ports
 
-- **WebSocket Port**: Default `8765` - Used for Firefox extension communication
+- **WebSocket Port**: Default `8765` - Used for Firefox extension communication. A server that finds it taken uses the next free one of 8766 to 8769 (see [Several sessions](#several-sessions))
 - **MCP Port**: Default `3000` - Used for MCP client connections
 
-## Configuring Extension
+## Real input (WebDriver BiDi)
 
-The Firefox extension stores its connection settings per profile (`storage.local`), so
-two profiles signed in to the same Firefox account can use different names and
-ports. Retry and timeout settings still sync (`storage.sync`).
+Events an extension dispatches are untrusted, and pages that check ignore them:
+Miro's canvas and comment menus, and native context menus. When Firefox runs with
+its remote control on, `content_click`, `content_hover`, `content_drag`,
+`content_type` and `content_press_key` send real mouse and keyboard input through
+WebDriver BiDi instead, which a page cannot tell from a person's. Their results
+then end in `(real input)`. Without remote control, or when it cannot reach the
+tab, the same tools fall back to events dispatched by script.
 
-### 1. Access Options
+### Starting Firefox with remote control
 
-- **Options Page**: Right-click extension → "Manage Extension" → "Preferences"
-- **Popup Interface**: Click extension icon for quick configuration
-- Or go to `about:addons` → FoxMCP → "Preferences"
+Start Firefox with `--remote-debugging-port=PORT`. For a profile you open from a
+shortcut, add the flag to the shortcut's target:
 
-### 2. Configure Connection
+```
+"C:\Program Files\Mozilla Firefox\firefox.exe" -P "Work" --remote-debugging-port=9223
+```
 
-- **Hostname**: Server hostname (default: `localhost`)
-- **WebSocket Port**: Server WebSocket port (default: `8765`)
-- **Browser name**: How this profile appears in `browsers_list`, e.g. "Main" or "Work"
-- **Advanced Options**: Retry intervals, max retries, ping timeouts
-- **Test Configuration**: Built-in test override system for development
+If another Firefox is already running on the computer, add `-no-remote` as well.
+Without it the running Firefox opens the profile through its profile switcher and
+drops the flag, and the new window has no remote control.
 
-### 3. Features
+### How the server finds it
 
-- **Real-time storage sync**: Configuration changes persist across browser restarts
-- **Connection Status**: Real-time connection status monitoring
-- **Status Indicators**: Live connection status with retry attempt information
-- **Automatic Reconnection**: Extension automatically reconnects when settings change
-- **Configuration Preservation**: Test settings maintained during normal use
+The server finds the port by itself. It tries 9222 to 9229, the ports remote
+control usually listens on (`LIKELY_PORTS` in `server/bidi.py`), and remembers the
+one that worked for each connected browser. With several profiles under remote
+control, it still picks the right Firefox: before each real action the content
+script puts a one-time token on the tab (a `data-foxmcp-tab` attribute on
+`<html>`), and the server looks for that token through each port, so only the
+Firefox holding the tab answers. When no port answers, the server uses scripted
+events and does not look again for 60 seconds.
+
+Firefox allows one BiDi session at a time, and several servers may share a
+browser, so each action opens a session, does its work and ends it.
+
+### The add-on's settings
+
+"Use real input", under Real input on the settings page, is on by default; turn
+it off to always use scripted events. "Remote control port" is 0 by default,
+which means the server finds the port; set it only when Firefox was started with
+a port outside 9222 to 9229. The toolbar popup shows which applies.
+
+Real input does not get round the settings under [What the agent may
+do](#what-the-agent-may-do). The content script's preparation step is an ordinary
+request, refused like any other while the agent is paused, when "Click, type and
+press keys" is off, or on a blocked site.
+
+### What remote control changes in Firefox
+
+With remote control on, Firefox applies Mozilla's recommended automation
+preferences to the profile, which among other things turn session restore off. To
+keep the profile's own preferences, add this line to `user.js` in the profile
+folder:
+
+```js
+user_pref("remote.prefs.recommended", false);
+```
+
+**While the port is open, any program on this computer can drive Firefox through
+it**, signed-in sessions included, and the add-on's settings do not cover those
+programs. Turn remote control on only for profiles where that is acceptable.
+
+### Limits
+
+- Firefox's remote control starts a page's own HTML5 drag-and-drop but cannot
+  finish it: the drop never happens. `content_drag` therefore uses the scripted
+  drag when it starts on a draggable element, a link or an image, and pages
+  accept its drop events. Drags on canvases, sliders and lists that follow the
+  mouse themselves use real input.
+- Miro's menus do not close on Escape, even with real input.
+
+## The Add-on's Settings Page
+
+Open it with the Settings button in the toolbar popup, or from `about:addons`,
+where it is shown inside the add-on's page (`options_ui.open_in_tab` is false).
+Every change saves as it is made and applies at once, to this Firefox profile
+only. The popup is a status panel: the connection and any other sessions, this
+browser's name, the tabs an agent is working in (go to or release each), and the
+follow and pause switches.
+
+Settings are kept in `storage.local`, per profile, so Firefox Sync does not copy
+one profile's name or blocked sites to every other. Their names and defaults are
+in `extension/settings.js`, which the background script, the content script, the
+popup and the options page all load. Host and port are in `storage.local` too.
+The reconnect timings (retry interval, give up after, ping timeout) stay in
+`storage.sync`, where older versions kept them.
+
+### What the agent may do
+
+**Pause the agent** refuses every request until it is turned off, and the agent
+lets go of its tabs. The same switch is in the toolbar popup.
+
+**Allowed** lists ten groups of actions, each on by default and each able to be
+turned off on its own. A refused request reaches the agent as an error naming the
+group, such as `"Run scripts in pages" is turned off in this browser's MCP Bridge
+settings.`
+
+| Setting | Covers |
+|---|---|
+| Read pages and take screenshots | `content_get_text`, `content_get_html`, `content_snapshot`, `tabs_capture_screenshot` |
+| Click, type and press keys | `content_click`, `content_hover`, `content_drag`, `content_type`, `content_press_key`, and real input |
+| Run scripts in pages | `content_execute_script`, and so `content_execute_predefined` |
+| Put files on upload fields | `content_upload_files` (with a trigger element, it also needs "Click, type and press keys") |
+| Copy images and paste | `content_copy_image`, `content_paste` |
+| Open, close, switch and navigate tabs | `tabs_list`, `tabs_create`, `tabs_close`, `tabs_switch`, `tabs_move`, and the `navigation_*` tools |
+| Manage windows and tab groups | The window tools, `tabs_group`, `tabs_ungroup`, `tabs_groups_update`, `tabs_groups_query` |
+| Read and delete history | The `history_*` tools |
+| Read and change bookmarks | The `bookmarks_*` tools |
+| Watch network requests | The `requests_*` tools |
+
+The mapping from actions to groups is `ACTION_PERMISSIONS` in
+`extension/settings.js`. `tabs_release` belongs to no group and always works, so
+an agent can let go of a tab even while paused.
+
+**Blocked sites** takes one site per line. The agent cannot read, click, open or
+screenshot a blocked site or its subdomains: `example.org` also blocks
+`www.example.org`, and a full URL pasted in works too.
+
+**Private windows** are off limits unless "Let the agent work in private windows"
+is on. Firefox also has to allow the add-on in private windows (in `about:addons`).
+
+**Following**, "Show me the tab the agent works in", brings the tab the agent acts
+in to the front. It is off by default, so the agent works in background tabs and
+you stay on yours.
+
+**Let go of a tab after** sets how many minutes of no action in a tab (5 by
+default) clear the overlay from it. It also leaves when the agent calls
+`tabs_release` or its session ends.
+
+### On the page
+
+While the agent works in a tab, an overlay shows it. It can be turned off
+altogether, or in parts: the glowing border around the page, the line saying what
+the agent is doing (at the bottom or the top of the page), and the pulsing ring on
+the tab's icon. Its colour can be changed, with a button to go back to the
+default.
+
+The agent's cursor can be hidden. Its movement is "Like a hand" (a slight curve
+and a small correction at the end) or "Direct", and its speed is slow, normal or
+fast; slower moves make each click and keystroke take longer. With "Show text
+being typed in" off, text goes in at once, which is faster.
+
+The toolbar button shows "off" when no server is connected, "stop" when the agent
+is paused, and otherwise how many tabs the agent is working in. "Show status on
+the button" turns that off.
+
+### Connection
+
+"This browser's name" is how `browsers_list` tells this profile apart from others
+(see [Several Firefox Profiles](#several-firefox-profiles)). Host and port are the
+server's, `localhost` and `8765` by default. "Other sessions" is how many ports
+after that one the add-on scans for more sessions, 4 by default (see [Several
+sessions](#several-sessions)). Real input is described
+[above](#real-input-webdriver-bidi). Under Reconnecting: "Retry every" (1000 to
+60000 ms, 5000 by default), "Give up after" (-1 keeps trying for as long as
+Firefox is open), and the ping timeout. A Reconnect button dials the server again.
+
+### Backup and reset
+
+**Export settings** saves this profile's settings, connection and reconnect
+timings to a JSON file. **Import settings** reads such a file into another
+profile. It takes only known settings of the right type, and keeps the importing
+profile's own name. **Reset all settings** asks for a second press within four
+seconds, then puts everything back to its default except the browser's name.
 
 ## Programmatic Server Configuration
 
@@ -305,15 +500,14 @@ server = FoxMCPServer(port=8765, start_mcp=False)
 2. **Load Firefox extension** (connects automatically to WebSocket)
 3. **Connect MCP client** to `http://localhost:3000`
 
-Or let the client start the server for you — see
-[Serving MCP over stdio](#serving-mcp-over-stdio), where step 1 is the client's
-job and step 3 does not apply.
+Or let the client start the server for you, as every route under
+[Setup](#setup) does. There step 1 is the client's job and step 3 does not apply.
 
 ### Supported MCP Clients
 
 **Claude Code**:
 ```bash
-claude mcp add --transport http foxmcp http://localhost:3000/mcp/
+claude mcp add --transport http firefox http://localhost:3000/mcp/
 ```
 
 **Other MCP Clients**:
@@ -343,10 +537,10 @@ export FOXMCP_EXT_SCRIPTS=/path/to/predefined/
 ```
 
 `FOXMCP_DISABLE_TOOLS` names tool groups to leave unregistered, and
-`FOXMCP_ENABLE_TOOLS` names individual tools to register anyway — see
+`FOXMCP_ENABLE_TOOLS` names individual tools to register anyway. See
 [Reducing the Tool Surface](#reducing-the-tool-surface).
 
-Ports are set on the command line, not through the environment — see
+Ports are set on the command line, not through the environment. See
 [Multiple Server Instances](#multiple-server-instances).
 
 ## Several Firefox Profiles
@@ -369,11 +563,13 @@ To keep profiles fully apart instead, give each its own port in the options page
 and run one server per port, each as its own MCP entry:
 
 ```bash
-claude mcp add firefox-work -- /path/to/venv/bin/python /path/to/server/server.py --stdio --port 8766
+claude mcp add firefox-work -- uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.8.1 mcp-bridge-for-firefox --stdio --port 8775
 ```
 
-Each entry adds the full tool set to every session (about 7,000 tokens), so one
-server with `browsers_select` is the cheaper default.
+Pick a port outside 8765 to 8769, which the first entry's sessions use (see
+[Several sessions](#several-sessions)); the second entry's sessions then use the
+four ports after its own. Each entry adds the full tool set to every session
+(about 9,700 tokens), so one server with `browsers_select` is the cheaper default.
 
 ## Multiple Server Instances
 
@@ -383,68 +579,11 @@ You can run multiple FoxMCP servers on different ports:
 # Server 1 - Default ports
 python server/server.py
 
-# Server 2 - Custom ports
-python server/server.py --port 8766 --mcp-port 3001
+# Server 2 - Custom ports, clear of the session ports 8766-8769
+python server/server.py --port 8775 --mcp-port 3001
 
 # Server 3 - WebSocket only
-python server/server.py --port 8767 --no-mcp
-```
-
-## Docker Configuration
-
-```dockerfile
-FROM python:3.11
-
-WORKDIR /app
-COPY . .
-
-RUN pip install -r requirements.txt
-
-# Expose ports
-EXPOSE 8765 3000
-
-# Run server
-CMD ["python", "server/server.py"]
-```
-
-```bash
-# Build and run
-docker build -t foxmcp .
-docker run -p 8765:8765 -p 3000:3000 foxmcp
-```
-
-## Configuration Files
-
-FoxMCP supports configuration files for persistent settings:
-
-### `config.json` (Optional)
-
-```json
-{
-  "server": {
-    "host": "localhost",
-    "websocket_port": 8765,
-    "mcp_port": 3000,
-    "enable_mcp": true
-  },
-  "security": {
-    "localhost_only": true,
-    "allow_external": false
-  },
-  "scripts": {
-    "directory": "/path/to/scripts",
-    "timeout": 30
-  },
-  "logging": {
-    "level": "INFO",
-    "file": "foxmcp.log"
-  }
-}
-```
-
-```bash
-# Use configuration file
-python server/server.py --config config.json
+python server/server.py --port 8785 --no-mcp
 ```
 
 ## Logging Configuration
@@ -480,9 +619,11 @@ server = FoxMCPServer()
 
 ## Tuning
 
-`FoxMCPServer` takes only `host`, `port`, `mcp_port`, and `start_mcp`. WebSocket frame
-sizes, ping intervals, and MCP concurrency are not exposed — the server accepts the
-`websockets` and FastMCP defaults.
+`FoxMCPServer` takes only `host`, `port`, `mcp_port`, `start_mcp`, `disabled_tool_groups`,
+`enabled_tools` and `use_stdio`. WebSocket frame
+sizes, ping intervals, and MCP concurrency are not exposed: the server accepts the
+`websockets` and FastMCP defaults, apart from a 64 MB limit on a message from the
+extension (`MAX_MESSAGE_BYTES`), which a full-window screenshot needs.
 
 Two things you can change:
 
@@ -497,8 +638,9 @@ A timeout returns an error dict rather than raising, so callers must check for
 `"error"` in the response.
 
 **Extension reconnection.** `CONFIG` at the top of `extension/background.js` sets
-`retryInterval` (5000 ms) and `maxRetries` (`-1`). Both are also editable from the
-extension popup. Changing the source values requires a rebuild.
+`retryInterval` (5000 ms) and `maxRetries` (`-1`). Both are also editable on the
+add-on's settings page, under Connection. Changing the source values requires a
+rebuild.
 
 `-1` retries forever: 50 attempts at `retryInterval`, then one every 30 seconds
 (`FAST_RETRIES` and `SLOW_RETRY_INTERVAL` in the same file). A positive value stops
@@ -510,13 +652,15 @@ your client: see [The reconnect gap](#the-reconnect-gap).
 
 ### Common Issues
 
-1. **Port already in use**:
+1. **Port already in use**: a server that finds 8765 taken moves to 8766 to 8769
+   by itself (see [Several sessions](#several-sessions)), so this error means all
+   five are taken, or a non-default `--port` and the four after it are.
    ```bash
    # Check what's using the port
    lsof -i :8765
 
-   # Use different port
-   python server/server.py --port 8766
+   # Use a port outside the session range
+   python server/server.py --port 8775
    ```
 
 2. **Extension can't connect**:
@@ -530,12 +674,12 @@ your client: see [The reconnect gap](#the-reconnect-gap).
    curl http://localhost:3000
    ```
 
-   The server logs to stdout, so run it in the foreground to watch connections
-   arrive.
+   The server logs to stderr, so run it in the foreground to watch connections
+   arrive. Under `--stdio` your client keeps that output with its MCP server logs.
 
 ### Debug Logging
 
-The server logs at `INFO`. There is no verbosity flag — the level is set in
+The server logs at `INFO`. There is no verbosity flag: the level is set in
 `server/server.py`.
 
 For extension-side detail, set `ENABLE_DEBUG_LOGGING_TO_SERVER = true` near the top of
@@ -545,41 +689,6 @@ and set it back to `false` before committing:
 
 ```bash
 make clean && make package && rm -rf dist/profile-cache/*
-```
-
-## Security Configuration
-
-### Production Deployment
-
-```python
-# Production configuration
-server = FoxMCPServer(
-    host="localhost",      # Never use 0.0.0.0 in production
-    enable_cors=False,     # Disable CORS for security
-    require_auth=True,     # Enable authentication
-    ssl_cert="cert.pem",   # Use SSL certificates
-    ssl_key="key.pem"
-)
-```
-
-### Development vs Production
-
-```python
-import os
-
-# Environment-based configuration
-if os.getenv("ENVIRONMENT") == "production":
-    server = FoxMCPServer(
-        host="localhost",
-        enable_debug=False,
-        require_auth=True
-    )
-else:
-    server = FoxMCPServer(
-        host="localhost",
-        enable_debug=True,
-        require_auth=False
-    )
 ```
 
 ## Checking Server Health
@@ -593,5 +702,5 @@ the pair is connected:
 | Extension popup | Click the toolbar icon | Connection state from the browser's side |
 | `make status` | From the project root | Whether port 8765 is in use |
 
-The server logs connections and disconnections to stdout, so running it in the
+The server logs connections and disconnections to stderr, so running it in the
 foreground is the quickest way to watch the socket come and go.
