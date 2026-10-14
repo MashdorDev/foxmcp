@@ -72,3 +72,6 @@ logs/
 .tmp/firefox
 firefox
 brag-output/
+
+# web-ext sign keeps the AMO upload id here
+extension/.amo-upload-uuid
