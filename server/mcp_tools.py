@@ -2088,12 +2088,13 @@ class FoxMCPTools:
                 raise ValueError(f"Give {side}ref, {side}selector, or both {side}x and {side}y")
             return {"ref": ref, "selector": selector, "x": x, "y": y}
 
-        async def real_pointer(tab_id, purpose, start, end, act):
+        async def real_pointer(tab_id, purpose, start, end, act, button=0):
             """Real hover, point click or drag: the content script moves the
             cursor and says where in the viewport, the server does the rest"""
             return await real_input(tab_id, None, None, purpose, act, prep_message=lambda token: {
                 "action": "content.real_pointer_prep",
-                "data": {"tabId": tab_id, "from": start, "to": end, "purpose": purpose, "token": token}})
+                "data": {"tabId": tab_id, "from": start, "to": end, "purpose": purpose, "token": token,
+                         "button": button}})
 
         def target(tab_id: int, ref: Optional[str], selector: Optional[str]) -> Dict[str, Any]:
             if not ref and not selector:
@@ -2214,13 +2215,17 @@ class FoxMCPTools:
             from_ref: Optional[str] = None, from_selector: Optional[str] = None,
             from_x: Optional[int] = None, from_y: Optional[int] = None,
             to_ref: Optional[str] = None, to_selector: Optional[str] = None,
-            to_x: Optional[int] = None, to_y: Optional[int] = None
+            to_x: Optional[int] = None, to_y: Optional[int] = None,
+            button: str = "left"
         ) -> str:
             """Drag from one element or point to another and let go: move items on
             a board or canvas, reorder lists, drop a card in a column, move sliders
 
             Each end is an element (ref or selector) or a point in the visible page
             (x and y, CSS pixels). With real input set up it is a real mouse drag.
+            To move the view around a canvas rather than an item on it, drag with
+            the button the site pans with: "right" on Miro, "middle" on Figma,
+            draw.io and many maps.
 
             Args:
                 tab_id: ID of the tab
@@ -2232,25 +2237,34 @@ class FoxMCPTools:
                 to_selector: CSS selector to drop on
                 to_x: With to_y, the point to drop at
                 to_y: See to_x
+                button: The mouse button held: "left", "middle" or "right"
+                    (default: "left")
             """
+            buttons = {"left": 0, "middle": 1, "right": 2}
+            if button not in buttons:
+                raise ValueError('button must be "left", "middle" or "right"')
+            pan = button != "left"
+            button = buttons[button]
             start = spot(tab_id, from_ref, from_selector, from_x, from_y, "from_")
             end = spot(tab_id, to_ref, to_selector, to_x, to_y, "to_")
             async def drag_for_real(bidi, context, prep):
                 # Firefox's remote control starts a page's own drag-and-drop
                 # (draggable elements, links, images) but never drops, so those
-                # get the scripted drag, whose drop events pages do accept
-                if not prep.get("pageDragAndDrop"):
-                    await bidi.drag(context, prep["from"], prep["to"])
+                # get the scripted drag, whose drop events pages do accept. Only
+                # the left button starts one.
+                if pan or not prep.get("pageDragAndDrop"):
+                    await bidi.drag(context, prep["from"], prep["to"], button)
 
-            real = await real_pointer(tab_id, "drag", start, end, drag_for_real)
+            real = await real_pointer(tab_id, "drag", start, end, drag_for_real, button)
             if real is not None:
                 prep, error = real
                 if error:
                     return f"Failed to drag: {error}"
-                if not prep.get("pageDragAndDrop"):
+                if pan or not prep.get("pageDragAndDrop"):
                     return f"Dragged {prep.get('target')} (real input)"
             data, error = await page_request({"action": "content.drag",
-                                              "data": {"tabId": tab_id, "from": start, "to": end}})
+                                              "data": {"tabId": tab_id, "from": start, "to": end,
+                                                       "button": button}})
             if error:
                 return f"Failed to drag: {error}"
             return f"Dragged {data.get('dragged')}"

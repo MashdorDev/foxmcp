@@ -96,10 +96,13 @@ it, which keeps the tool list shorter.
     instead of an element, for canvases such as a Miro board
 - `content_hover(tab_id, ref=None, selector=None, x=None, y=None)` - Move the mouse onto an element or a point without clicking
   - Opens hover menus and shows tooltips or buttons that only appear on hover
-- `content_drag(tab_id, from_ref=None, from_selector=None, from_x=None, from_y=None, to_ref=None, to_selector=None, to_x=None, to_y=None)` - Drag from one element or point to another and let go
+- `content_drag(tab_id, from_ref=None, from_selector=None, from_x=None, from_y=None, to_ref=None, to_selector=None, to_x=None, to_y=None, button="left")` - Drag from one element or point to another and let go
   - Each end is an element (`*_ref` or `*_selector`) or a point (`*_x` with `*_y`)
   - For moving items on a board or canvas, reordering lists, dropping a card in a
     column, moving sliders
+  - `button` is `"left"`, `"middle"` or `"right"`. Canvas apps pan the view with
+    one of the other two held: Miro with the right button, Figma, draw.io and
+    many maps with the middle one
 - `content_type(tab_id, text, ref=None, selector=None, clear=True, submit=False)` - Type into an input or editable element
   - Checks afterwards that the whole text arrived, and reports a short result as an error
   - Under real input a line break is typed as Shift+Enter, which adds a line in chat
@@ -326,6 +329,11 @@ await client.call_tool("content_click", {
 # Drag a card onto a column
 await client.call_tool("content_drag", {
     "tab_id": 123, "from_ref": "r12", "to_selector": "#done-column"
+})
+
+# Move the view of a Miro board up and to the left
+await client.call_tool("content_drag", {
+    "tab_id": 123, "from_x": 700, "from_y": 600, "to_x": 400, "to_y": 300, "button": "right"
 })
 
 # Select all in the focused field (real input only)

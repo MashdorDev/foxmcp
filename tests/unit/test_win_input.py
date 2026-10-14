@@ -11,7 +11,9 @@ import test_imports  # Automatic path setup
 from server import win_input
 from server.win_input import (WindowInput, WindowInputUnavailable, WM_CHAR, WM_KEYDOWN, WM_KEYUP,
                               WM_SYSKEYDOWN, WM_SYSKEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
-                              WM_LBUTTONDBLCLK, VK_CONTROL, VK_MENU, VK_SHIFT)
+                              WM_LBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, MK_MBUTTON,
+                              WM_RBUTTONDOWN, WM_RBUTTONUP, MK_RBUTTON, VK_MBUTTON, VK_RBUTTON,
+                              VK_CONTROL, VK_MENU, VK_SHIFT)
 
 pytestmark = pytest.mark.skipif(not win_input.AVAILABLE, reason='Window input is Windows only')
 
@@ -101,6 +103,29 @@ async def test_a_double_click_sends_the_second_press_as_a_double_click():
     await window.click(None, window.point, clicks=2)
     presses = [message for message, _ in window.posted if message != win_input.WM_MOUSEMOVE]
     assert presses == [WM_LBUTTONDOWN, WM_LBUTTONUP, WM_LBUTTONDBLCLK, WM_LBUTTONUP]
+
+
+@pytest.mark.asyncio
+async def test_a_middle_button_drag_holds_the_middle_button_the_whole_way():
+    # Canvas apps such as Miro pan the view with it
+    window = RecordingWindow()
+    await window.drag(None, {'x': 10, 'y': 20}, {'x': 110, 'y': 70}, button=1)
+    presses = [(m, w) for m, w in window.posted if m != win_input.WM_MOUSEMOVE]
+    assert presses == [(WM_MBUTTONDOWN, MK_MBUTTON), (WM_MBUTTONUP, 0)]
+    down = window.posted.index((WM_MBUTTONDOWN, MK_MBUTTON))
+    up = window.posted.index((WM_MBUTTONUP, 0))
+    assert all(w == MK_MBUTTON for m, w in window.posted[down + 1:up])
+    # let go of before the release is posted, or Firefox never fires pointerup
+    assert window.held == [[VK_MBUTTON], [], []]
+
+
+@pytest.mark.asyncio
+async def test_a_right_button_drag_pans_the_way_miro_does():
+    window = RecordingWindow()
+    await window.drag(None, {'x': 10, 'y': 20}, {'x': 110, 'y': 70}, button=2)
+    presses = [(m, w) for m, w in window.posted if m != win_input.WM_MOUSEMOVE]
+    assert presses == [(WM_RBUTTONDOWN, MK_RBUTTON), (WM_RBUTTONUP, 0)]
+    assert window.held[0] == [VK_RBUTTON]
 
 
 def test_page_points_become_physical_screen_pixels():

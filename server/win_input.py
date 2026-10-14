@@ -41,10 +41,11 @@ if AVAILABLE:
 
 WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_LBUTTONDBLCLK = 0x200, 0x201, 0x202, 0x203
 WM_RBUTTONDOWN, WM_RBUTTONUP = 0x204, 0x205
+WM_MBUTTONDOWN, WM_MBUTTONUP = 0x207, 0x208
 WM_KEYDOWN, WM_KEYUP, WM_CHAR, WM_SYSKEYDOWN, WM_SYSKEYUP = 0x100, 0x101, 0x102, 0x104, 0x105
-MK_LBUTTON, MK_RBUTTON = 0x1, 0x2
+MK_LBUTTON, MK_RBUTTON, MK_MBUTTON = 0x1, 0x2, 0x10
 
-VK_LBUTTON, VK_RBUTTON = 0x01, 0x02
+VK_LBUTTON, VK_RBUTTON, VK_MBUTTON = 0x01, 0x02, 0x04
 VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN = 0x10, 0x11, 0x12, 0x5B
 MODIFIERS = {'Shift': VK_SHIFT, 'Control': VK_CONTROL, 'Ctrl': VK_CONTROL, 'Alt': VK_MENU,
              'Meta': VK_LWIN, 'Command': VK_LWIN}
@@ -186,7 +187,7 @@ class WindowInput:
             self.attached = True
         state = (ctypes.c_ubyte * 256)()
         user32.GetKeyboardState(state)
-        for vk in (VK_LBUTTON, VK_RBUTTON, *MODIFIERS.values(), *(v for vs in SIDES.values() for v in vs)):
+        for vk in (VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, *MODIFIERS.values(), *(v for vs in SIDES.values() for v in vs)):
             state[vk] = 0
         for vk in keys:
             state[vk] = 0x80
@@ -233,12 +234,16 @@ class WindowInput:
         for i in range(1, HOVER_STEPS + 1):
             await self.move(x - (HOVER_STEPS - i) * 2, y)
 
-    async def drag(self, context, start: Dict[str, float], end: Dict[str, float]):
+    async def drag(self, context, start: Dict[str, float], end: Dict[str, float], button: int = 0):
+        # Canvas apps pan the view with the middle or right button held
+        down, up, flag, vk = {1: (WM_MBUTTONDOWN, WM_MBUTTONUP, MK_MBUTTON, VK_MBUTTON),
+                              2: (WM_RBUTTONDOWN, WM_RBUTTONUP, MK_RBUTTON, VK_RBUTTON)}.get(
+                                  button, (WM_LBUTTONDOWN, WM_LBUTTONUP, MK_LBUTTON, VK_LBUTTON))
         await self.move(start['x'], start['y'])
-        self.buttons = MK_LBUTTON
-        self.hold([VK_LBUTTON])
+        self.buttons = flag
+        self.hold([vk])
         cx, cy = self.client_point(start['x'], start['y'])
-        self.post(WM_LBUTTONDOWN, MK_LBUTTON, mouse_lparam(cx, cy))
+        self.post(down, flag, mouse_lparam(cx, cy))
         await asyncio.sleep(DRAG_HOLD_S)
         for i in range(1, DRAG_STEPS + 1):
             t = i / DRAG_STEPS
@@ -249,7 +254,10 @@ class WindowInput:
         await asyncio.sleep(DRAG_HOLD_S)
         cx, cy = self.client_point(end['x'], end['y'])
         self.buttons = 0
-        self.post(WM_LBUTTONUP, 0, mouse_lparam(cx, cy))
+        # Firefox reads the held buttons when the release arrives: with the
+        # button still down it fires mouseup but never pointerup
+        self.hold([])
+        self.post(up, 0, mouse_lparam(cx, cy))
         await asyncio.sleep(STEP_S)
         self.release()
 

@@ -101,9 +101,13 @@ function usesPageDragAndDrop(el) {
   return Boolean(el.closest('[draggable="true"]') || (el.closest('a[href], img') && !el.closest('[draggable="false"]')));
 }
 
-async function dragBetween(from, to, steps = 12) {
+// button: 0 left, 1 middle, 2 right. Canvas apps pan the view with the middle
+// or right one held: plain pointer and mouse events, no slider or drag-and-drop.
+async function dragBetween(from, to, steps = 12, button = 0) {
+  const pan = button !== 0;
+  const held = { button, buttons: [1, 4, 2][button] };
   // A slider ignores scripted mouse events: set the value the drop point means
-  const range = from.el.closest('input[type="range"]');
+  const range = pan ? null : from.el.closest('input[type="range"]');
   if (range) {
     const rect = range.getBoundingClientRect();
     const share = Math.min(1, Math.max(0, (to.x - rect.left) / rect.width));
@@ -114,20 +118,23 @@ async function dragBetween(from, to, steps = 12) {
     return;
   }
   const transfer = new DataTransfer();
-  const draggable = usesPageDragAndDrop(from.el) ? from.el.closest('[draggable="true"], a[href], img') : null;
-  from.el.dispatchEvent(new PointerEvent('pointerdown', mouseInit(from, { buttons: 1 })));
-  from.el.dispatchEvent(new MouseEvent('mousedown', mouseInit(from, { buttons: 1 })));
+  const draggable = !pan && usesPageDragAndDrop(from.el) ? from.el.closest('[draggable="true"], a[href], img') : null;
+  from.el.dispatchEvent(new PointerEvent('pointerdown', mouseInit(from, held)));
+  from.el.dispatchEvent(new MouseEvent('mousedown', mouseInit(from, held)));
   if (draggable) draggable.dispatchEvent(new DragEvent('dragstart', { ...mouseInit(from), dataTransfer: transfer }));
   let over = from.el;
   for (let i = 1; i <= steps; i++) {
     const t = minimumJerk(i / steps);
     const point = { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t };
     const el = document.elementFromPoint(point.x, point.y) || document.body;
-    el.dispatchEvent(new PointerEvent('pointermove', mouseInit(point, { buttons: 1 })));
-    el.dispatchEvent(new MouseEvent('mousemove', mouseInit(point, { buttons: 1 })));
+    el.dispatchEvent(new PointerEvent('pointermove', mouseInit(point, { buttons: held.buttons, button: -1 })));
+    el.dispatchEvent(new MouseEvent('mousemove', mouseInit(point, { buttons: held.buttons })));
     if (draggable) {
       if (el !== over) el.dispatchEvent(new DragEvent('dragenter', { ...mouseInit(point), dataTransfer: transfer }));
-      el.dispatchEvent(new DragEvent('dragover', { ...mouseInit(point), dataTransfer: transfer }));
+      // A drop target says it takes the item by cancelling dragover, and the
+      // cursor shows it the way the system's does
+      const accepts = !el.dispatchEvent(new DragEvent('dragover', { ...mouseInit(point), dataTransfer: transfer }));
+      if (settings.overlayEnabled) setCursorState(accepts ? 'drop' : 'nodrop');
     }
     over = el;
     await new Promise(resolve => setTimeout(resolve, 16));
@@ -137,8 +144,8 @@ async function dragBetween(from, to, steps = 12) {
     end.dispatchEvent(new DragEvent('drop', { ...mouseInit(to), dataTransfer: transfer }));
     draggable.dispatchEvent(new DragEvent('dragend', { ...mouseInit(to), dataTransfer: transfer }));
   }
-  end.dispatchEvent(new PointerEvent('pointerup', mouseInit(to)));
-  end.dispatchEvent(new MouseEvent('mouseup', mouseInit(to)));
+  end.dispatchEvent(new PointerEvent('pointerup', mouseInit(to, { button })));
+  end.dispatchEvent(new MouseEvent('mouseup', mouseInit(to, { button })));
 }
 
 function findTarget({ ref, selector }) {
@@ -394,7 +401,11 @@ const OVERLAY_LABEL = 'AI agent is working in this tab';
 const FIELD_LINGER_MS = 800;
 // After this long in "thinking" the cursor settles to idle.
 const IDLE_AFTER_MS = 20000;
-const CURSOR_STATES = ['idle', 'thinking', 'reading', 'clicking', 'typing', 'waiting', 'working'];
+// grab: an open hand over what is about to be dragged; grabbing: the hand
+// closed while the button is held (moving an item or panning a canvas); drop
+// and nodrop: over a place that takes the dragged item, or one that does not
+const CURSOR_STATES = ['idle', 'thinking', 'reading', 'clicking', 'typing', 'waiting', 'working',
+  'grab', 'grabbing', 'drop', 'nodrop'];
 let fieldTimer = null;
 let idleTimer = null;
 let cursorPos = null;
@@ -426,11 +437,94 @@ function applyOverlaySettings() {
   if (!settings.tabMarker || !settings.overlayEnabled) stopTabMarker();
 }
 
+// The cursor takes the shape the system cursor would have at its spot, as the
+// page's CSS sets it: an arrow, a pointing hand over links and buttons, an
+// I-beam over text, an open hand over what can be dragged and a closed one
+// while it is held, arrows for moving and resizing, and so on. Each shape is
+// drawn on a 22px grid, outlined in white and filled (or stroked) in the
+// overlay's colour; hot is the point of the shape that sits on the target.
+const ARROW = '<path d="M2 1.5 L2 18 L6.6 13.9 L9.6 20.5 L12.5 19.2 L9.6 12.7 L15.8 12.7 Z"/>';
+const RESIZE = '<path d="M11 1.5l4.2 5h-2.7v9h2.7l-4.2 5-4.2-5h2.7v-9H6.8z"';
+const MAGNIFIER = '<circle cx="9.5" cy="9.5" r="6"/><path d="M14 14l6 6"/>';
+const CURSOR_SHAPES = {
+  arrow: { hot: [2, 1.5], draw: ARROW },
+  point: { hot: [9.2, 1.5], draw: `<rect x="7.5" y="1.5" width="3.4" height="11" rx="1.7"/>
+    <rect x="10.9" y="8" width="3.2" height="6" rx="1.6"/><rect x="14.1" y="9" width="3.2" height="5.5" rx="1.6"/>
+    <rect x="2.2" y="10.6" width="3.2" height="6.4" rx="1.6" transform="rotate(-38 3.8 13.8)"/>
+    <rect x="5.4" y="10.6" width="12" height="9.4" rx="4"/>` },
+  open: { hot: [11, 11], draw: `<rect x="4.6" y="5.2" width="3.2" height="9" rx="1.6"/><rect x="7.8" y="2.6" width="3.2" height="10" rx="1.6"/>
+    <rect x="11" y="3.2" width="3.2" height="10" rx="1.6"/><rect x="14.2" y="5" width="3.2" height="9" rx="1.6"/>
+    <rect x="1.4" y="10.4" width="3.2" height="6.4" rx="1.6" transform="rotate(-38 3 13.6)"/>
+    <rect x="4.6" y="9.6" width="12.8" height="9.6" rx="4.2"/>` },
+  closed: { hot: [11, 13], draw: `<rect x="4.6" y="8" width="3.2" height="5" rx="1.6"/><rect x="7.8" y="7" width="3.2" height="5.4" rx="1.6"/>
+    <rect x="11" y="7" width="3.2" height="5.4" rx="1.6"/><rect x="14.2" y="8" width="3.2" height="5" rx="1.6"/>
+    <rect x="3.4" y="11.4" width="3" height="5" rx="1.5" transform="rotate(-25 4.9 13.9)"/>
+    <rect x="4.6" y="10" width="12.8" height="9.2" rx="4.2"/>` },
+  ibeam: { hot: [11, 11], line: true, draw: '<path d="M7.5 2.5h2.2c.7 0 1.3.6 1.3 1.3 0-.7.6-1.3 1.3-1.3h2.2M11 3.8v14.4M7.5 19.5h2.2c.7 0 1.3-.6 1.3-1.3 0 .7.6 1.3 1.3 1.3h2.2"/>' },
+  move: { hot: [11, 11], draw: '<path d="M11 1l3.5 4h-2.3v4.8h4.8V7.5L21 11l-4 3.5v-2.3h-4.8V17h2.3L11 21l-3.5-4h2.3v-4.8H5v2.3L1 11l4-3.5v2.3h4.8V5H7.5z"/>' },
+  notallowed: { hot: [11, 11], line: true, draw: '<circle cx="11" cy="11" r="7.5"/><path d="M5.7 5.7l10.6 10.6"/>' },
+  crosshair: { hot: [11, 11], line: true, draw: '<path d="M11 2v7M11 13v7M2 11h7M13 11h7"/>' },
+  ns: { hot: [11, 11], draw: `${RESIZE}/>` },
+  ew: { hot: [11, 11], draw: `${RESIZE} transform="rotate(90 11 11)"/>` },
+  nwse: { hot: [11, 11], draw: `${RESIZE} transform="rotate(-45 11 11)"/>` },
+  nesw: { hot: [11, 11], draw: `${RESIZE} transform="rotate(45 11 11)"/>` },
+  zoomin: { hot: [9.5, 9.5], line: true, draw: `${MAGNIFIER}<path d="M6.5 9.5h6M9.5 6.5v6"/>` },
+  zoomout: { hot: [9.5, 9.5], line: true, draw: `${MAGNIFIER}<path d="M6.5 9.5h6"/>` },
+  // The arrow with a mark beside it
+  progress: { hot: [2, 1.5], draw: ARROW },
+  help: { hot: [2, 1.5], draw: ARROW },
+  copy: { hot: [2, 1.5], draw: ARROW },
+  alias: { hot: [2, 1.5], draw: ARROW },
+};
+// CSS cursor keywords to the shapes above
+const CSS_CURSORS = {
+  default: 'arrow', 'context-menu': 'arrow', none: 'arrow', pointer: 'point', text: 'ibeam', 'vertical-text': 'ibeam',
+  grab: 'open', grabbing: 'closed', move: 'move', 'all-scroll': 'move', 'not-allowed': 'notallowed', 'no-drop': 'notallowed',
+  crosshair: 'crosshair', cell: 'crosshair', 'ns-resize': 'ns', 'n-resize': 'ns', 's-resize': 'ns', 'row-resize': 'ns',
+  'ew-resize': 'ew', 'e-resize': 'ew', 'w-resize': 'ew', 'col-resize': 'ew', 'nwse-resize': 'nwse', 'nw-resize': 'nwse',
+  'se-resize': 'nwse', 'nesw-resize': 'nesw', 'ne-resize': 'nesw', 'sw-resize': 'nesw', wait: 'progress',
+  progress: 'progress', help: 'help', 'zoom-in': 'zoomin', 'zoom-out': 'zoomout', copy: 'copy', alias: 'alias',
+};
+// While dragging, the hand: open on the way to the item and again on letting go,
+// closed while the button is held
+const HAND_SHAPES = { grab: 'open', grabbing: 'closed', drop: 'closed', nodrop: 'closed' };
+
+function cursorShapeSvg(name, { hot, draw, line }) {
+  const outline = line ? 'fill="none" stroke="#fff" stroke-width="4.4" stroke-linecap="round"'
+    : 'fill="#fff" stroke="#fff" stroke-width="2.8" stroke-linejoin="round"';
+  const inner = line ? 'fill="none" style="stroke:var(--c)" stroke-width="2" stroke-linecap="round"' : 'style="fill:var(--c)"';
+  return `<svg class="cursor shape s-${name}" style="left:${-hot[0]}px;top:${-hot[1]}px" viewBox="0 0 22 22"
+    xmlns="http://www.w3.org/2000/svg"><g ${outline}>${draw}</g><g ${inner}>${draw}</g></svg>`;
+}
+
+// The shape the system cursor would have at a point of the page
+function shapeAt(x, y) {
+  const el = document.elementFromPoint(x, y);
+  if (!el) return 'arrow';
+  const value = getComputedStyle(el).cursor.split(',').pop().trim();
+  if (value !== 'auto') return CSS_CURSORS[value] || 'arrow';
+  if (el.closest('a[href]')) return 'point';
+  if (el.closest('textarea, [contenteditable=""], [contenteditable="true"], input:not([type=button], [type=submit], ' +
+      '[type=reset], [type=checkbox], [type=radio], [type=range], [type=color], [type=file], [type=image])')) return 'ibeam';
+  // Over the letters of a text, not the space beside it
+  const caret = document.caretPositionFromPoint?.(x, y);
+  const node = caret?.offsetNode;
+  if (node && node.nodeType === Node.TEXT_NODE && node.length && node.data.trim()) {
+    const range = document.createRange();
+    const i = Math.min(caret.offset, node.length - 1);
+    range.setStart(node, i);
+    range.setEnd(node, i + 1);
+    const box = range.getBoundingClientRect();
+    if (x >= box.left - 2 && x <= box.right + 2 && y >= box.top && y <= box.bottom) return 'ibeam';
+  }
+  return 'arrow';
+}
+
 function overlayRoot() {
   let host = document.getElementById(OVERLAY_ID);
   // An overlay left by an older version of the add-on, from before it was
   // updated in a tab that stayed open, lacks the parts this one drives.
-  if (host && !host.shadowRoot?.querySelector('.pointer .badge')) {
+  if (host && !host.shadowRoot?.querySelector('.pointer .s-point')) {
     host.remove();
     host = null;
   }
@@ -465,12 +559,21 @@ function overlayRoot() {
         .pointer.reading .badge.read { display:block; width:26px; height:3px; border-radius:2px; background:color-mix(in srgb, var(--c) 35%, transparent); overflow:hidden; }
         .read b { display:block; width:9px; height:3px; background:var(--c); animation: read .9s linear infinite; }
         @keyframes read { from { transform:translateX(-9px) } to { transform:translateX(26px) } }
-        .pointer.waiting .badge.wait { display:block; width:14px; height:14px; border-radius:50%;
+        .pointer.waiting .badge.wait, .pointer[data-shape=progress] .badge.wait { display:block; width:14px; height:14px; border-radius:50%;
           border:2px solid color-mix(in srgb, var(--c) 30%, transparent); border-top-color:var(--c); animation: spin .8s linear infinite; }
         @keyframes spin { to { transform:rotate(360deg) } }
         .pointer.typing .badge.type { display:block; width:2px; height:14px; background:var(--c); animation: blink .8s steps(1) infinite; }
         @keyframes blink { 50% { opacity:0 } }
         .pointer.working .badge.work { display:block; width:10px; height:10px; border-radius:50%; background:var(--c); animation: dot 1s ease-in-out infinite; }
+        .shape { display:none; position:absolute; }
+        ${Object.keys(CURSOR_SHAPES).map(name => `.pointer[data-shape=${name}] .s-${name}`).join(', ')} { display:block; }
+        .pointer.grab .shape { animation: breathe 2.4s ease-in-out infinite; }
+        .badge.mark { left:8px; top:8px; width:12px; height:12px; border-radius:50%; border:1.5px solid #fff;
+          box-shadow:0 1px 2px rgba(0,0,0,.45); align-items:center; justify-content:center; color:#fff; font:700 10px/1 system-ui, sans-serif; }
+        .pointer[data-shape=help] .badge.help, .pointer[data-shape=copy] .badge.copy, .pointer[data-shape=alias] .badge.alias {
+          display:flex; left:12px; top:12px; background:var(--c); }
+        .pointer.drop .badge.drop { display:flex; background:var(--c); }
+        .pointer.nodrop .badge.nodrop { display:flex; background:#57534e; }
         .ripple { position:fixed; width:28px; height:28px; margin:-14px 0 0 -14px; border-radius:50%;
           border:2px solid var(--c); animation:ripple .45s ease-out forwards; }
         @keyframes ripple { from { transform:scale(.3); opacity:1; } to { transform:scale(1.4); opacity:0; } }
@@ -482,10 +585,13 @@ function overlayRoot() {
       <div class="glow"></div>
       <div class="field"></div>
       <div class="label"><span class="dot"></span><span class="text"></span></div>
-      <div class="pointer idle">
-        <svg class="cursor" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">
-          <path d="M2 1.5 L2 18 L6.6 13.9 L9.6 20.5 L12.5 19.2 L9.6 12.7 L15.8 12.7 Z" style="fill:var(--c)" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/>
-        </svg>
+      <div class="pointer idle" data-shape="arrow">
+        ${Object.entries(CURSOR_SHAPES).map(([name, shape]) => cursorShapeSvg(name, shape)).join('')}
+        <span class="badge mark drop">+</span>
+        <span class="badge mark nodrop">&#215;</span>
+        <span class="badge mark help">?</span>
+        <span class="badge mark copy">+</span>
+        <span class="badge mark alias">&#8599;</span>
         <span class="badge think"><i></i><i></i><i></i></span>
         <span class="badge read"><b></b></span>
         <span class="badge wait"></span>
@@ -506,14 +612,51 @@ function placeCursor(root) {
   root.querySelector('.pointer').style.transform = `translate(${cursorPos.x}px, ${cursorPos.y}px)`;
 }
 
+// While a button is held the hand stays closed: the state the agent moves on
+// to meanwhile (thinking, from the background script, during a real drag)
+// waits until it lets go
+let dragHeld = false;
+let stateAfterDrag = null;
+let releaseTimer = null;
+let pageShape = 'arrow';
+const RELEASE_MS = 700;
+
 function setCursorState(state) {
+  if (dragHeld && !(state in HAND_SHAPES)) {
+    stateAfterDrag = state;
+    return;
+  }
+  if (state === 'grabbing') dragHeld = true;
   const pointer = overlayRoot().shadowRoot.querySelector('.pointer');
   for (const name of CURSOR_STATES) pointer.classList.toggle(name, name === state);
   clearTimeout(idleTimer);
+  clearTimeout(releaseTimer);
   if (state === 'thinking') idleTimer = setTimeout(() => setCursorState('idle'), IDLE_AFTER_MS);
   if (state !== cursorState) reading = null;
   cursorState = state;
+  pointer.dataset.shape = HAND_SHAPES[state] || pageShape;
   scheduleIdleMotion();
+}
+
+// The shape follows what is under the cursor
+function followPage(point) {
+  if (!point || !settings.overlayEnabled) return;
+  pageShape = shapeAt(point.x, point.y);
+  if (!(cursorState in HAND_SHAPES)) overlayRoot().shadowRoot.querySelector('.pointer').dataset.shape = pageShape;
+}
+
+// The button goes up: the hand opens, then the cursor takes the page's shape
+// and whatever state came in during the drag
+function releaseDrag() {
+  if (!settings.overlayEnabled) return;
+  dragHeld = false;
+  setCursorState('grab');
+  releaseTimer = setTimeout(() => {
+    if (cursorState !== 'grab') return;
+    followPage(cursorPos);
+    setCursorState(stateAfterDrag || 'idle');
+    stateAfterDrag = null;
+  }, RELEASE_MS);
 }
 
 function setLabel(text) {
@@ -544,6 +687,9 @@ function hideOverlay() {
   clearTimeout(idleTimer);
   clearTimeout(fieldTimer);
   clearTimeout(idleMotionTimer);
+  clearTimeout(releaseTimer);
+  dragHeld = false;
+  stateAfterDrag = null;
   stopTabMarker();
 }
 
@@ -730,8 +876,14 @@ async function moveCursorToPoint(to, targetSize, press) {
     const motion = pointer.animate(
       points.map(({ x, y, offset }) => ({ transform: `translate(${x}px, ${y}px)`, offset })),
       { duration, easing: 'linear' });
+    const follow = setInterval(() => {
+      const at = new DOMMatrix(getComputedStyle(pointer).transform);
+      followPage({ x: at.e, y: at.f });
+    }, 60);
     await motion.finished.catch(() => {});
+    clearInterval(follow);
   }
+  followPage(to);
   if (press) {
     if (settings.cursorMotion !== 'direct') await new Promise(resolve => setTimeout(resolve, between(CHECK_PAUSE_MS)));
     const ripple = document.createElement('div');
@@ -824,6 +976,7 @@ async function idleStep() {
       frames.push({ transform: `translate(${from.x + (point.x - from.x) * s}px, ${from.y + (point.y - from.y) * s}px)` });
     }
     await pointer.animate(frames, { duration: ms, easing: 'linear' }).finished.catch(() => {});
+    followPage(point);
   }
   scheduleIdleMotion();
 }
@@ -961,10 +1114,16 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
       case 'drag': {
         const from = targetPoint(data.from);
         const to = targetPoint(data.to);
-        showOverlay('clicking');
+        showOverlay('grab');
         moveCursorToPoint(from, from.size, true)
-          .then(() => Promise.all([dragBetween(from, to), moveCursorToPoint(to, to.size, false)]))
-          .then(() => sendResponse({ dragged: `${describe(from.el)} to ${describe(to.el)}` }))
+          .then(() => {
+            showOverlay('grabbing');
+            return Promise.all([dragBetween(from, to, 12, data.button || 0), moveCursorToPoint(to, to.size, false)]);
+          })
+          .then(() => {
+            releaseDrag();
+            sendResponse({ dragged: `${describe(from.el)} to ${describe(to.el)}` });
+          })
           .catch(error => sendResponse({ error: error.message }));
         break;
       }
@@ -975,11 +1134,19 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
         try {
           const from = targetPoint(data.from);
           const to = data.to ? targetPoint(data.to) : null;
-          showOverlay('clicking');
-          moveCursorToPoint(from, from.size, data.purpose === 'click' || data.purpose === 'drag')
+          const drag = data.purpose === 'drag';
+          const dragAndDrop = drag && !data.button && usesPageDragAndDrop(from.el);
+          showOverlay(drag ? 'grab' : 'clicking');
+          moveCursorToPoint(from, from.size, data.purpose === 'click' || drag)
             .then(() => {
               document.documentElement.setAttribute('data-foxmcp-tab', data.token);
-              if (to) moveCursorToPoint(to, to.size, false);  // follows the real drag on screen
+              // The cursor follows the real drag on screen, the hand closed
+              // until it lets go. A page's drag-and-drop is scripted instead
+              // (see content_drag), which draws its own.
+              if (to && !dragAndDrop) {
+                showOverlay('grabbing');
+                moveCursorToPoint(to, to.size, false).then(releaseDrag);
+              }
               sendResponse({
                 from: { x: Math.round(from.x), y: Math.round(from.y) },
                 to: to && { x: Math.round(to.x), y: Math.round(to.y) },
@@ -987,7 +1154,7 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 screen: screenInfo(),
                 // Firefox's remote control starts the page's drag-and-drop but
                 // cannot drop, so those drags are scripted (see content_drag)
-                pageDragAndDrop: data.purpose === 'drag' && usesPageDragAndDrop(from.el),
+                pageDragAndDrop: dragAndDrop,
               });
             })
             .catch(error => sendResponse({ error: error.message }));
