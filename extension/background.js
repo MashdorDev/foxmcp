@@ -8,6 +8,21 @@
 let websocket = null;
 let isConnected = false;
 
+// The person's settings (settings.js), kept current as they change them
+let settings = { ...SETTINGS_DEFAULTS };
+loadSettings().then(saved => { settings = saved; updateBadge(); });
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  for (const [key, change] of Object.entries(changes)) {
+    if (key in SETTINGS_DEFAULTS) settings[key] = change.newValue ?? SETTINGS_DEFAULTS[key];
+  }
+  if ('paused' in changes || 'badgeEnabled' in changes) updateBadge();
+  // A paused agent lets go of its tabs, so the person gets the page back
+  if (changes.paused && changes.paused.newValue) {
+    for (const tabId of [...agentTabs.keys()]) releaseAgentTab(tabId);
+  }
+});
+
 
 // Debug logging configuration - set to true to send extension logs to server
 const ENABLE_DEBUG_LOGGING_TO_SERVER = false;
@@ -208,7 +223,7 @@ function connectToMCPServer() {
 
 // More servers, one per MCP client: under --stdio every client launches its own,
 // and a server that finds the configured port taken moves to one of the next
-// EXTRA_SERVER_PORTS (see server.py). Each gets a connection of its own here, so
+// ports (EXTRA_SERVER_PORTS in server.py; how many are scanned is a setting). Each gets a connection of its own here, so
 // every Claude session can use the browser at the same time. Replies go back on
 // the connection the request came in on (replySockets).
 //
@@ -217,7 +232,6 @@ function connectToMCPServer() {
 // only while the main connection is up, and probes one port at a time; probing
 // all of them at once queued the main connection behind them and it never got
 // through.
-const EXTRA_SERVER_PORTS = 4;
 const EXTRA_SERVER_SCAN_MS = 15000;
 const extraSockets = new Map(); // port -> socket
 let extraScanRunning = false;
@@ -253,7 +267,7 @@ async function scanExtraServers() {
   if (extraScanRunning) return;
   extraScanRunning = true;
   try {
-    for (let i = 1; i <= EXTRA_SERVER_PORTS; i++) {
+    for (let i = 1; i <= settings.extraServerPorts; i++) {
       if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
       const port = CONFIG.port + i;
       const existing = extraSockets.get(port);
@@ -363,7 +377,7 @@ function disconnect() {
 }
 
 // The connection each request came in on, so its reply goes back there. Several
-// servers can be connected at once (one per MCP client, see EXTRA_SERVER_PORTS).
+// servers can be connected at once (one per MCP client, see scanExtraServers).
 const replySockets = new Map(); // request id -> socket
 // The agent call behind each request, for handlers that learn the tab late (tabs.create)
 const agentCalls = new Map(); // request id -> { tool, status }
@@ -377,6 +391,12 @@ async function handleMessage(message, socket = websocket) {
   // Handle ping-pong for connection testing
   if (action === 'ping') {
     sendResponse(id, 'ping', { message: 'pong', timestamp: new Date().toISOString() });
+    return;
+  }
+
+  const refusal = await refusalFor(action, data || {});
+  if (refusal) {
+    sendError(id, 'NOT_ALLOWED', refusal);
     return;
   }
 
@@ -397,6 +417,46 @@ async function handleMessage(message, socket = websocket) {
       markAgentActive(agentTab, { state: 'thinking' });
     }
   }
+}
+
+// Why the person's settings rule an action out, or null when it may go ahead
+const PERMISSION_OF = Object.fromEntries(Object.entries(ACTION_PERMISSIONS)
+  .flatMap(([permission, actions]) => actions.map(action => [action, permission])));
+
+async function refusalFor(action, data) {
+  const permission = PERMISSION_OF[action];
+  if (!permission) return null;
+  if (settings.paused) {
+    return 'The person using this Firefox has paused the agent. They can resume it from the MCP Bridge button in the toolbar.';
+  }
+  if (!settings[permission]) {
+    return `"${PERMISSION_NAMES[permission]}" is turned off in this browser's MCP Bridge settings.`;
+  }
+  if (action === 'windows.create' && data.incognito && !settings.allowPrivate) {
+    return 'The agent is not allowed in private windows (MCP Bridge settings).';
+  }
+  const urls = [];
+  if (data.url) urls.push({ url: data.url });
+  let tabId = data.tabId;
+  if (action === 'tabs.captureVisibleTab') {
+    const [active] = await browser.tabs.query({ active: true, ...(data.windowId ? { windowId: data.windowId } : { currentWindow: true }) });
+    tabId = active && active.id;
+  }
+  if (tabId != null) {
+    const tab = await browser.tabs.get(Number(tabId)).catch(() => null);
+    if (tab) urls.push({ url: tab.url, incognito: tab.incognito });
+  }
+  for (const { url, incognito } of urls) {
+    if (incognito && !settings.allowPrivate) {
+      return 'This tab is in a private window, and the agent is not allowed in private windows (MCP Bridge settings).';
+    }
+    let host = '';
+    try { host = new URL(url).hostname; } catch (error) { continue; }
+    if (isBlockedHost(host, settings.blockedSites)) {
+      return `${host} is on this browser's blocked sites list (MCP Bridge settings).`;
+    }
+  }
+  return null;
 }
 
 async function routeAction(id, action, data) {
@@ -480,13 +540,21 @@ function sendError(id, code, message, details = {}) {
 function updateBadge() {
   const extra = [...extraSockets.values()].filter(socket => socket.readyState === WebSocket.OPEN).length;
   const servers = (isConnected ? 1 : 0) + extra;
+  if (!settings.badgeEnabled) {
+    browser.browserAction.setBadgeText({ text: '' });
+  } else if (settings.paused) {
+    browser.browserAction.setBadgeText({ text: 'stop' });
+    browser.browserAction.setBadgeBackgroundColor({ color: '#c50042' });
+    browser.browserAction.setTitle({ title: 'MCP Bridge for Firefox: agent paused' });
+    return;
+  }
   if (!servers) {
-    browser.browserAction.setBadgeText({ text: 'off' });
+    if (settings.badgeEnabled) browser.browserAction.setBadgeText({ text: 'off' });
     browser.browserAction.setBadgeBackgroundColor({ color: '#8f8f9d' });
     browser.browserAction.setTitle({ title: 'MCP Bridge for Firefox: not connected' });
     return;
   }
-  browser.browserAction.setBadgeText({ text: agentTabs.size ? String(agentTabs.size) : '' });
+  if (settings.badgeEnabled) browser.browserAction.setBadgeText({ text: agentTabs.size ? String(agentTabs.size) : '' });
   browser.browserAction.setBadgeBackgroundColor({ color: '#d97757' });
   browser.browserAction.setTitle({ title: `MCP Bridge for Firefox: ${servers} session${servers > 1 ? 's' : ''}` +
     (agentTabs.size ? `, agent working in ${agentTabs.size} tab${agentTabs.size > 1 ? 's' : ''}` : '') });
@@ -892,12 +960,11 @@ async function getCurrentTabUrl(tabId) {
 // Tabs an agent is working in. The page shows the overlay, the cursor and a
 // marker in the tab strip from the agent's first action until the agent says it
 // is done (tabs_release), the server that sent the work disconnects, or
-// AGENT_IDLE_RELEASE_MS pass with no action in the tab.
+// releaseAfterMinutes (a setting) pass with no action in the tab.
 //
 // Each entry holds what the page shows: a state the cursor animates (reading,
 // clicking, typing, waiting, working, thinking) and a first-person label, the
 // agent's own status line when it gave one.
-const AGENT_IDLE_RELEASE_MS = 5 * 60 * 1000;
 const agentTabs = new Map(); // tab id -> { socket, state, label, at }
 
 // What each action looks like on the page when the agent gives no status line
@@ -948,8 +1015,7 @@ async function markAgentActive(tabId, { state = 'working', label = null, agentSt
   sendAgentState(tabId);
   // "Follow the agent" brings forward whichever tab the agent acts in next
   if (state !== 'thinking') {
-    const { followAgent } = await browser.storage.local.get({ followAgent: false });
-    if (followAgent) browser.tabs.update(tabId, { active: true }).catch(() => {});
+    if (settings.followAgent) browser.tabs.update(tabId, { active: true }).catch(() => {});
   }
 }
 
@@ -969,7 +1035,7 @@ function releaseAgentTabsOf(socket) {
 setInterval(() => {
   const now = Date.now();
   for (const [tabId, entry] of agentTabs) {
-    if (now - entry.at > AGENT_IDLE_RELEASE_MS) releaseAgentTab(tabId);
+    if (now - entry.at > settings.releaseAfterMinutes * 60 * 1000) releaseAgentTab(tabId);
   }
 }, 30000);
 
@@ -1008,6 +1074,8 @@ async function sendMessageWithRetry(tabId, message, maxRetries = 5, delayMs = 20
       // reloaded) never got content.js, and no amount of waiting fixes that.
       if (attempt < maxRetries && error.message.includes('Receiving end does not exist')) {
         try {
+          // settings.js may already be there, in which case loading it again throws
+          await browser.tabs.executeScript(tabId, { file: '/settings.js' }).catch(() => {});
           await browser.tabs.executeScript(tabId, { file: '/content.js' });
           continue;
         } catch (injectError) {

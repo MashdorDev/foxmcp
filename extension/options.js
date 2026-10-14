@@ -2,54 +2,108 @@
  * MCP Bridge for Firefox - options page
  * Licensed under the MIT License - see LICENSE file for details
  *
- * Every field saves as it changes. Name, follow, host and port are per profile
- * (storage.local), since Firefox Sync would copy synced values to every
- * profile on the account; the retry settings stay in storage.sync, where older
- * versions kept them. Test overrides (testPort/testHostname, set by the test
- * suite) win over the saved host and port, and the page says so.
+ * Every element with data-setting is bound to that key of settings.js and
+ * saves as it changes. Host and port also live in storage.local but go
+ * through the background script, which reconnects. The reconnect timings stay
+ * in storage.sync, where older versions kept them. Test overrides
+ * (testPort/testHostname, set by the test suite) win over the saved host and
+ * port, and the page says so.
  */
 
 const $ = id => document.getElementById(id);
 
-const DEFAULTS = {
-  local: { hostname: 'localhost', port: 8765, browserName: '', followAgent: false },
-  sync: { retryInterval: 5000, maxRetries: -1, pingTimeout: 5000 },
-};
-const ADVANCED = {
-  retryInterval: { min: 1000, max: 60000, message: 'Use 1000 to 60000 ms' },
-  maxRetries: { min: -1, max: 100, message: 'Use -1, or 0 to 100' },
-  pingTimeout: { min: 1000, max: 30000, message: 'Use 1000 to 30000 ms' },
-};
-const SAVED_SHOWN_MS = 1500;
+const CONNECTION_DEFAULTS = { hostname: 'localhost', port: 8765 };
+const RETRY_DEFAULTS = { retryInterval: 5000, maxRetries: -1, pingTimeout: 5000 };
+const TEXT_SAVE_DELAY_MS = 400;
+const TOAST_MS = 1600;
 
-function flashSaved(key) {
-  const note = document.querySelector(`.saved[data-for="${key}"]`);
-  if (!note) return;
-  note.hidden = false;
-  clearTimeout(note.timer);
-  note.timer = setTimeout(() => { note.hidden = true; }, SAVED_SHOWN_MS);
+let toastTimer;
+function toast(message) {
+  $('toast').textContent = message;
+  $('toast').hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { $('toast').hidden = true; }, TOAST_MS);
 }
 
-function setError(id, message) {
-  $(`${id}Error`).textContent = message || '';
-  $(id).setAttribute('aria-invalid', message ? 'true' : 'false');
+function setError(key, message) {
+  const slot = document.querySelector(`[data-error="${key}"]`);
+  if (slot) slot.textContent = message || '';
+  const input = $(key);
+  if (input) input.setAttribute('aria-invalid', message ? 'true' : 'false');
+}
+
+// A number field's value, or null after showing why it is not allowed
+function checkedNumber(input) {
+  const value = Number(input.value);
+  const min = Number(input.min);
+  const max = Number(input.max);
+  const valid = input.value !== '' && Number.isInteger(value) && value >= min && value <= max;
+  setError(input.id, valid ? '' : `Use a whole number from ${min} to ${max}`);
+  return valid ? value : null;
+}
+
+function renderPermissions() {
+  $('permissions').replaceChildren(...Object.entries(PERMISSION_NAMES).map(([key, name]) => {
+    const label = document.createElement('label');
+    label.className = 'check';
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.dataset.setting = key;
+    const text = document.createElement('span');
+    text.textContent = name;
+    label.append(box, text);
+    return label;
+  }));
+}
+
+function showSettings(values) {
+  for (const input of document.querySelectorAll('[data-setting]')) {
+    const value = values[input.dataset.setting];
+    if (input.type === 'checkbox') input.checked = Boolean(value);
+    else input.value = value;
+  }
 }
 
 async function load() {
-  const sync = await browser.storage.sync.get({ ...DEFAULTS.sync, hostname: null, port: null, testPort: null, testHostname: null });
-  const local = await browser.storage.local.get({ ...DEFAULTS.local, hostname: null, port: null });
+  showSettings(await loadSettings());
+  const sync = await browser.storage.sync.get({ ...RETRY_DEFAULTS, hostname: null, port: null, testPort: null, testHostname: null });
+  const local = await browser.storage.local.get({ hostname: null, port: null });
   // Older versions saved host and port to storage.sync
-  $('hostname').value = local.hostname || sync.hostname || DEFAULTS.local.hostname;
-  $('port').value = local.port || sync.port || DEFAULTS.local.port;
-  $('browserName').value = local.browserName;
-  $('followAgent').checked = local.followAgent;
-  for (const id of Object.keys(ADVANCED)) $(id).value = sync[id];
+  $('hostname').value = local.hostname || sync.hostname || CONNECTION_DEFAULTS.hostname;
+  $('port').value = local.port || sync.port || CONNECTION_DEFAULTS.port;
+  for (const key of Object.keys(RETRY_DEFAULTS)) $(key).value = sync[key];
 
   const testing = sync.testPort || sync.testHostname;
   $('testNotice').hidden = !testing;
   if (testing) {
     $('testNotice').textContent = `The test suite has set ${sync.testHostname || 'the host'}` +
       `${sync.testPort ? ':' + sync.testPort : ''}, which is used instead of the host and port below.`;
+  }
+}
+
+async function saveSetting(input) {
+  const key = input.dataset.setting;
+  let value;
+  if (input.type === 'checkbox') value = input.checked;
+  else if (input.type === 'number') value = checkedNumber(input);
+  else value = input.value.trim();
+  if (value === null) return;
+  if (key === 'browserName') value = value.slice(0, 60);
+  await browser.storage.local.set({ [key]: value });
+  toast('Saved');
+}
+
+function bindSettings() {
+  for (const input of document.querySelectorAll('[data-setting]')) {
+    if (input.type === 'text' || input.tagName === 'TEXTAREA') {
+      let timer;
+      input.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => saveSetting(input), TEXT_SAVE_DELAY_MS);
+      });
+    } else {
+      input.addEventListener('change', () => saveSetting(input));
+    }
   }
 }
 
@@ -65,56 +119,80 @@ async function refreshStatus() {
   $('url').textContent = `ws://${config.hostname || $('hostname').value}:${config.port || $('port').value}`;
 }
 
-let nameTimer;
-$('browserName').addEventListener('input', () => {
-  clearTimeout(nameTimer);
-  nameTimer = setTimeout(async () => {
-    await browser.storage.local.set({ browserName: $('browserName').value.trim().slice(0, 60) });
-    flashSaved('browserName');
-  }, 400);
-});
-
-$('followAgent').addEventListener('change', async () => {
-  await browser.storage.local.set({ followAgent: $('followAgent').checked });
-  flashSaved('followAgent');
-});
-
 async function saveConnection() {
   const hostname = $('hostname').value.trim();
-  const port = Number($('port').value);
   setError('hostname', hostname ? '' : 'Enter a host, such as localhost');
-  setError('port', Number.isInteger(port) && port >= 1 && port <= 65535 ? '' : 'Use a port from 1 to 65535');
-  if (!hostname || $('port').getAttribute('aria-invalid') === 'true') return;
+  const port = checkedNumber($('port'));
+  if (!hostname || port === null) return;
   await browser.storage.local.set({ hostname, port });
   await browser.runtime.sendMessage({ type: 'configUpdated', config: { hostname, port } });
-  flashSaved('connection');
+  toast('Saved, reconnecting');
   setTimeout(refreshStatus, 800);
 }
-$('hostname').addEventListener('change', saveConnection);
-$('port').addEventListener('change', saveConnection);
 
-for (const [id, range] of Object.entries(ADVANCED)) {
-  $(id).addEventListener('change', async () => {
-    const value = Number($(id).value);
-    const valid = Number.isInteger(value) && value >= range.min && value <= range.max;
-    setError(id, valid ? '' : range.message);
-    if (!valid) return;
-    await browser.storage.sync.set({ [id]: value });
-    await browser.runtime.sendMessage({ type: 'advancedConfigUpdated', config: { [id]: value } });
-    flashSaved('advanced');
-  });
+async function saveRetry(input) {
+  const value = checkedNumber(input);
+  if (value === null) return;
+  await browser.storage.sync.set({ [input.id]: value });
+  await browser.runtime.sendMessage({ type: 'advancedConfigUpdated', config: { [input.id]: value } });
+  toast('Saved');
 }
 
-$('reconnect').addEventListener('click', async () => {
-  $('statusText').textContent = 'Reconnecting';
-  await browser.runtime.sendMessage({ action: 'forceReconnect' });
-  setTimeout(refreshStatus, 800);
-});
+async function exportSettings() {
+  const data = {
+    format: 'mcp-bridge-settings',
+    version: browser.runtime.getManifest().version,
+    settings: await loadSettings(),
+    connection: await browser.storage.local.get(CONNECTION_DEFAULTS),
+    reconnect: await browser.storage.sync.get(RETRY_DEFAULTS),
+  };
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+  const name = (data.settings.browserName || 'firefox').replace(/[^\w-]+/g, '-').toLowerCase();
+  link.download = `mcp-bridge-settings-${name}.json`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+}
+
+// Only known keys of the right type are taken from a file, so a hand-edited
+// or foreign file cannot write anything else into storage
+function picked(source, defaults) {
+  const out = {};
+  for (const [key, fallback] of Object.entries(defaults)) {
+    if (source && typeof source[key] === typeof fallback) out[key] = source[key];
+  }
+  return out;
+}
+
+async function importSettings(file) {
+  let data;
+  try {
+    data = JSON.parse(await file.text());
+  } catch (error) {
+    toast('That file is not a settings export');
+    return;
+  }
+  if (!data || data.format !== 'mcp-bridge-settings') {
+    toast('That file is not a settings export');
+    return;
+  }
+  const settings = picked(data.settings, SETTINGS_DEFAULTS);
+  const connection = picked(data.connection, CONNECTION_DEFAULTS);
+  // The name belongs to the profile it came from; keep this profile's own
+  delete settings.browserName;
+  await browser.storage.local.set({ ...settings, ...connection });
+  await browser.storage.sync.set(picked(data.reconnect, RETRY_DEFAULTS));
+  if (connection.hostname || connection.port) {
+    await browser.runtime.sendMessage({ type: 'configUpdated', config: connection });
+  }
+  await load();
+  toast(`Imported ${Object.keys(settings).length + Object.keys(connection).length} settings`);
+}
 
 // A second press within a few seconds confirms, so a stray click cannot wipe
 // the settings and no modal dialog is needed
 let resetArmed;
-$('reset').addEventListener('click', async () => {
+async function reset() {
   if (!resetArmed) {
     $('reset').textContent = 'Press again to reset';
     resetArmed = setTimeout(() => {
@@ -126,12 +204,42 @@ $('reset').addEventListener('click', async () => {
   clearTimeout(resetArmed);
   resetArmed = null;
   $('reset').textContent = 'Reset all settings';
-  await browser.storage.local.set(DEFAULTS.local);
-  await browser.storage.sync.set(DEFAULTS.sync);
-  await browser.runtime.sendMessage({ type: 'configUpdated', config: { ...DEFAULTS.sync, hostname: DEFAULTS.local.hostname, port: DEFAULTS.local.port } });
+  const { browserName } = await loadSettings();
+  await browser.storage.local.set({ ...SETTINGS_DEFAULTS, browserName, ...CONNECTION_DEFAULTS });
+  await browser.storage.sync.set(RETRY_DEFAULTS);
+  await browser.runtime.sendMessage({ type: 'configUpdated', config: { ...CONNECTION_DEFAULTS, ...RETRY_DEFAULTS } });
   await load();
-  flashSaved('advanced');
+  toast('Settings reset');
   setTimeout(refreshStatus, 800);
+}
+
+renderPermissions();
+bindSettings();
+$('hostname').addEventListener('change', saveConnection);
+$('port').addEventListener('change', saveConnection);
+for (const key of Object.keys(RETRY_DEFAULTS)) $(key).addEventListener('change', event => saveRetry(event.target));
+$('defaultColor').addEventListener('click', async () => {
+  $('overlayColor').value = SETTINGS_DEFAULTS.overlayColor;
+  await saveSetting($('overlayColor'));
+});
+$('reconnect').addEventListener('click', async () => {
+  $('statusText').textContent = 'Reconnecting';
+  await browser.runtime.sendMessage({ action: 'forceReconnect' });
+  setTimeout(refreshStatus, 800);
+});
+$('export').addEventListener('click', exportSettings);
+$('import').addEventListener('click', () => $('importFile').click());
+$('importFile').addEventListener('change', event => {
+  if (event.target.files[0]) importSettings(event.target.files[0]);
+  event.target.value = '';
+});
+$('reset').addEventListener('click', reset);
+
+// The popup can pause the agent while this page is open
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.paused) {
+    document.querySelector('[data-setting="paused"]').checked = Boolean(changes.paused.newValue);
+  }
 });
 
 load().then(refreshStatus);

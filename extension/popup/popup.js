@@ -61,14 +61,21 @@ async function render() {
     return item;
   }));
 
-  const { followAgent } = await browser.storage.local.get({ followAgent: false });
+  const { followAgent, paused } = await loadSettings();
   $('followAgent').checked = followAgent;
+  $('paused').checked = paused;
+  $('pausedNote').hidden = !paused;
 }
 
 $('version').textContent = `v${browser.runtime.getManifest().version}`;
 
 $('followAgent').addEventListener('change', event =>
   browser.storage.local.set({ followAgent: event.target.checked }));
+
+$('paused').addEventListener('change', async event => {
+  await browser.storage.local.set({ paused: event.target.checked });
+  render();
+});
 
 $('reconnect').addEventListener('click', async () => {
   $('statusText').textContent = 'Reconnecting';

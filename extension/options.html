@@ -5,105 +5,179 @@
   <title>MCP Bridge for Firefox settings</title>
   <link rel="stylesheet" href="ui.css">
   <style>
-    body { max-width: 640px; padding: 16px 20px 28px; }
+    body { max-width: 680px; padding: 16px 20px 32px; }
     h1 { font-size: 17px; }
-    .lead { margin: 4px 0 18px; }
-    h2 { font-size: 13px; margin: 22px 0 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); }
-    .field { display: grid; grid-template-columns: 160px 1fr; gap: 4px 16px; align-items: start; margin-bottom: 14px; }
-    .field > label { padding-top: 5px; font-weight: 600; }
-    .field .hint { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+    .lead { margin: 4px 0 6px; }
+    nav { display: flex; flex-wrap: wrap; gap: 14px; margin: 0 0 8px; font-size: 12px; }
+    h2 { font-size: 13px; margin: 26px 0 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); }
+    .field { display: grid; grid-template-columns: 170px 1fr; gap: 4px 16px; align-items: start; margin-bottom: 12px; }
+    .field > label, .field > .name { padding-top: 5px; font-weight: 600; }
+    .hint { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
     .hint.block { display: block; font-weight: normal; }
     .short { max-width: 120px; }
-    .check { display: flex; gap: 8px; align-items: flex-start; }
+    select, textarea { font: inherit; padding: 5px 8px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+    textarea { width: 100%; min-height: 70px; resize: vertical; }
+    input[type="color"] { width: 44px; height: 28px; padding: 0 2px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); }
+    .check { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 8px; cursor: pointer; }
     .check input { margin-top: 3px; }
-    .status { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-raised); }
+    .checks { padding-top: 4px; }
+    .check.flush { margin: 0; }
+    .status { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-raised); margin-bottom: 8px; }
     .status #statusText { font-weight: 600; }
     .status .muted { margin-left: auto; }
-    details { margin-top: 22px; border-top: 1px solid var(--border); padding-top: 12px; }
+    .pause { border-color: var(--bad); }
+    details { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
     summary { cursor: pointer; font-weight: 600; margin-bottom: 12px; }
-    .saved { font-size: 12px; color: var(--ok); margin-left: 8px; }
-    .actions { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
-    #testNotice { margin: 0 0 14px; padding: 8px 12px; border-radius: var(--radius); border: 1px dashed var(--border); }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    #toast { position: fixed; right: 16px; bottom: 16px; padding: 6px 12px; border-radius: var(--radius); background: var(--text); color: var(--bg); font-size: 12px; }
+    #testNotice { margin: 8px 0 0; padding: 8px 12px; border-radius: var(--radius); border: 1px dashed var(--border); }
   </style>
 </head>
 <body>
   <h1>MCP Bridge for Firefox</h1>
-  <p class="lead muted">Lets an MCP client such as Claude Code read, click and type in this Firefox. Changes save as you make them.</p>
-
+  <p class="lead muted">Lets an MCP client such as Claude Code read, click and type in this Firefox. Every change saves as you make it and applies right away, to this Firefox profile only.</p>
+  <nav><a href="#agent">What the agent may do</a><a href="#page">On the page</a><a href="#connection">Connection</a><a href="#backup">Backup and reset</a></nav>
   <p id="testNotice" class="muted" hidden></p>
 
-  <h2>This browser</h2>
+  <h2 id="agent">What the agent may do</h2>
+  <div class="status pause">
+    <label class="check flush"><input type="checkbox" data-setting="paused">
+      <span><strong>Pause the agent</strong><span class="hint block">Every request is refused until you turn this off, and the agent lets go of its tabs. Also in the toolbar popup.</span></span>
+    </label>
+  </div>
   <div class="field">
-    <label for="browserName">Name</label>
+    <span class="name">Allowed</span>
+    <div class="checks" id="permissions"></div>
+  </div>
+  <div class="field">
+    <label for="blockedSites">Blocked sites</label>
     <div>
-      <input type="text" id="browserName" maxlength="60" placeholder="Main, Work, Lost Tribe">
-      <div class="hint">How your AI client tells this Firefox profile apart from the others connected.<span class="saved" data-for="browserName" hidden>Saved</span></div>
+      <textarea id="blockedSites" data-setting="blockedSites" placeholder="mybank.com&#10;mail.google.com" spellcheck="false"></textarea>
+      <div class="hint">One per line. The agent cannot read, click, open or screenshot these, or their subdomains.</div>
     </div>
   </div>
   <div class="field">
-    <span></span>
-    <div>
-      <label class="check"><input type="checkbox" id="followAgent">
-        <span>Show me the tab the agent works in<span class="saved" data-for="followAgent" hidden>Saved</span>
-          <span class="hint block">When off, the agent works in background tabs and you stay on yours.</span></span>
-      </label>
-    </div>
+    <span class="name">Private windows</span>
+    <label class="check"><input type="checkbox" data-setting="allowPrivate">
+      <span>Let the agent work in private windows<span class="hint block">Firefox also has to allow the add-on in private windows (about:addons).</span></span></label>
+  </div>
+  <div class="field">
+    <span class="name">Following</span>
+    <label class="check"><input type="checkbox" data-setting="followAgent">
+      <span>Show me the tab the agent works in<span class="hint block">When off, the agent works in background tabs and you stay on yours.</span></span></label>
+  </div>
+  <div class="field">
+    <label for="releaseAfterMinutes">Let go of a tab after</label>
+    <div><input type="number" id="releaseAfterMinutes" data-setting="releaseAfterMinutes" class="short" min="1" max="120"> minutes idle
+      <div class="hint">The overlay leaves a tab when the agent says it is done, its session ends, or it has done nothing there for this long.</div>
+      <div class="error" data-error="releaseAfterMinutes"></div></div>
   </div>
 
-  <h2>Connection</h2>
+  <h2 id="page">On the page</h2>
+  <div class="field">
+    <span class="name">Overlay</span>
+    <div class="checks">
+      <label class="check"><input type="checkbox" data-setting="overlayEnabled"><span>Show that the agent is working in a tab<span class="hint block">Turn off to let it work with no sign on the page at all.</span></span></label>
+      <label class="check"><input type="checkbox" data-setting="overlayBorder"><span>Glowing border around the page</span></label>
+      <label class="check"><input type="checkbox" data-setting="overlayLabel"><span>Line saying what the agent is doing</span></label>
+      <label class="check"><input type="checkbox" data-setting="tabMarker"><span>Pulsing ring on the tab's icon in the tab bar</span></label>
+    </div>
+  </div>
+  <div class="field">
+    <label for="labelPosition">Line position</label>
+    <div><select id="labelPosition" data-setting="labelPosition"><option value="bottom">Bottom of the page</option><option value="top">Top of the page</option></select></div>
+  </div>
+  <div class="field">
+    <label for="overlayColor">Colour</label>
+    <div><input type="color" id="overlayColor" data-setting="overlayColor"> <button type="button" id="defaultColor">Default</button></div>
+  </div>
+  <div class="field">
+    <span class="name">Cursor</span>
+    <div class="checks">
+      <label class="check"><input type="checkbox" data-setting="cursorEnabled"><span>Show the agent's cursor</span></label>
+    </div>
+  </div>
+  <div class="field">
+    <label for="cursorMotion">Cursor movement</label>
+    <div><select id="cursorMotion" data-setting="cursorMotion">
+      <option value="human">Like a hand: a slight curve, a small correction at the end</option>
+      <option value="direct">Direct: straight to the target</option></select></div>
+  </div>
+  <div class="field">
+    <label for="cursorSpeed">Cursor speed</label>
+    <div><select id="cursorSpeed" data-setting="cursorSpeed"><option value="slow">Slow, easy to follow</option><option value="normal">Normal</option><option value="fast">Fast</option></select>
+      <div class="hint">Slower moves make each click and keystroke take longer.</div></div>
+  </div>
+  <div class="field">
+    <span class="name">Typing</span>
+    <label class="check"><input type="checkbox" data-setting="typingAnimated"><span>Show text being typed in<span class="hint block">Off puts the text in at once, which is faster.</span></span></label>
+  </div>
+  <div class="field">
+    <span class="name">Toolbar button</span>
+    <label class="check"><input type="checkbox" data-setting="badgeEnabled"><span>Show status on the button<span class="hint block">"off" when not connected, "stop" when paused, otherwise how many tabs the agent is in.</span></span></label>
+  </div>
+
+  <h2 id="connection">Connection</h2>
   <div class="status" aria-live="polite">
     <span id="dot" class="dot"></span><span id="statusText">Not connected</span>
     <span id="url" class="muted"></span>
     <button type="button" id="reconnect">Reconnect</button>
   </div>
-  <p class="hint muted">Each Claude session starts its own server. The first takes this port, the next ones the four ports after it, and this browser connects to all of them.</p>
+  <div class="field">
+    <label for="browserName">This browser's name</label>
+    <div>
+      <input type="text" id="browserName" data-setting="browserName" maxlength="60" placeholder="Main, Work, Lost Tribe">
+      <div class="hint">How your AI client tells this Firefox profile apart from the others connected.</div>
+    </div>
+  </div>
   <div class="field">
     <label for="hostname">Host</label>
-    <div>
-      <input type="text" id="hostname" placeholder="localhost">
-      <div id="hostnameError" class="error" role="alert"></div>
-    </div>
+    <div><input type="text" id="hostname" placeholder="localhost"><div class="error" data-error="hostname"></div></div>
   </div>
   <div class="field">
     <label for="port">Port</label>
-    <div>
-      <input type="number" id="port" class="short" min="1" max="65535" placeholder="8765">
-      <div id="portError" class="error" role="alert"></div>
-      <span class="saved" data-for="connection" hidden>Saved, reconnecting</span>
-    </div>
+    <div><input type="number" id="port" class="short" min="1" max="65535" placeholder="8765"><div class="error" data-error="port"></div></div>
+  </div>
+  <div class="field">
+    <label for="extraServerPorts">Other sessions</label>
+    <div><input type="number" id="extraServerPorts" data-setting="extraServerPorts" class="short" min="0" max="8"> ports after this one
+      <div class="hint">Each Claude session starts its own server; the first takes the port above and the next ones the ports after it. 0 connects to the first only.</div>
+      <div class="error" data-error="extraServerPorts"></div></div>
   </div>
 
   <details>
-    <summary>Advanced</summary>
+    <summary>Reconnecting</summary>
     <div class="field">
       <label for="retryInterval">Retry every</label>
-      <div>
-        <input type="number" id="retryInterval" class="short" min="1000" max="60000" step="500"> ms
+      <div><input type="number" id="retryInterval" class="short" min="1000" max="60000" step="500"> ms
         <div class="hint">How long to wait before trying the server again, 1000 to 60000.</div>
-        <div id="retryIntervalError" class="error" role="alert"></div>
-      </div>
+        <div class="error" data-error="retryInterval"></div></div>
     </div>
     <div class="field">
       <label for="maxRetries">Give up after</label>
-      <div>
-        <input type="number" id="maxRetries" class="short" min="-1" max="100"> tries
+      <div><input type="number" id="maxRetries" class="short" min="-1" max="100"> tries
         <div class="hint">-1 keeps trying for as long as Firefox is open.</div>
-        <div id="maxRetriesError" class="error" role="alert"></div>
-      </div>
+        <div class="error" data-error="maxRetries"></div></div>
     </div>
     <div class="field">
       <label for="pingTimeout">Ping timeout</label>
-      <div>
-        <input type="number" id="pingTimeout" class="short" min="1000" max="30000" step="500"> ms
-        <div id="pingTimeoutError" class="error" role="alert"></div>
-      </div>
-    </div>
-    <div class="actions">
-      <span class="saved" data-for="advanced" hidden>Saved</span>
-      <button type="button" id="reset" class="danger">Reset all settings</button>
+      <div><input type="number" id="pingTimeout" class="short" min="1000" max="30000" step="500"> ms
+        <div class="error" data-error="pingTimeout"></div></div>
     </div>
   </details>
 
+  <h2 id="backup">Backup and reset</h2>
+  <div class="actions">
+    <button type="button" id="export">Export settings</button>
+    <button type="button" id="import">Import settings</button>
+    <input type="file" id="importFile" accept="application/json,.json" hidden>
+    <button type="button" id="reset" class="danger">Reset all settings</button>
+  </div>
+  <p class="hint">Export saves this profile's settings to a file, to copy them to another Firefox profile with Import.</p>
+
+  <div id="toast" role="status" hidden></div>
+
+  <script src="settings.js"></script>
   <script src="options.js"></script>
 </body>
 </html>
