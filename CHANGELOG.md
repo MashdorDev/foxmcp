@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-10-14
+
+### Added
+- **Drag, hover and click at a point.** `content_drag` drags from an element or a point to another, for boards and canvases (Miro, Excalidraw), reordering, dropping a card in a column and sliders. `content_hover` moves the mouse without clicking, for hover menus and buttons that only appear on hover. `content_click` takes `x` and `y` to click a point on a canvas. With real input these are real mouse moves along a hand-like path. Firefox's remote control starts a page's own drag-and-drop but cannot drop, so draggable elements, links and images get the scripted drag, whose drop events pages accept.
+
 ## [1.7.2] - 2026-10-14
 
 ### Added
