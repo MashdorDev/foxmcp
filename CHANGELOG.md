@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-10-14
+
 ### Added
 - **Drag with the middle or right button.** `content_drag` takes `button` (`"left"`, `"middle"` or `"right"`), to pan the view of canvas apps: Miro pans with the right button, Figma, draw.io and many maps with the middle one. Works with real input on Windows (window messages) and through WebDriver BiDi, and scripted.
 - **The agent's cursor takes the page's cursor shapes.** Arrow, pointing hand, I-beam, open and closed hand, move, resize in four directions, not-allowed, crosshair, zoom in and out, and busy, help, copy and link marks, following the CSS `cursor` of whatever is under it. Drags show the open hand on the way, the closed hand while held, a plus or a cross over places that take or refuse a dropped item, and the open hand again on release.
