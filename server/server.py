@@ -1166,13 +1166,14 @@ class FoxMCPServer:
                 process_response=self.log_rejected_handshake
             )
         except OSError as e:
-            # The extension reaches one fixed port, so only one server can hold
-            # it. That is easy to hit in stdio mode, where every MCP client
-            # launches a server of its own, and the bare errno does not say so.
+            # A taken port normally moves the server to one of the next
+            # EXTRA_SERVER_PORTS before it gets here, so this means all of them
+            # are in use (one server per Claude session), or the port was taken
+            # in between. The bare errno says neither.
             logger.error(
                 f"Cannot listen on {self.host}:{self.port} for the extension: {e}. "
-                "Another FoxMCP server is most likely already running - the "
-                "extension connects to one port, so only one server can serve it."
+                f"The add-on connects to this port and the {EXTRA_SERVER_PORTS} after it; "
+                "if every one is held by another session's server, close one of those sessions."
             )
             raise
 

@@ -11,6 +11,12 @@ foxmcp/
 ├── LICENSE             # MIT License file
 ├── SECURITY.md         # Threat model and vulnerability reporting
 ├── package.json        # Project metadata and npm scripts
+├── pyproject.toml      # The server as a Python package (mcp-bridge-for-firefox command)
+├── .claude-plugin/
+│   └── marketplace.json # Lists the repo as a Claude Code plugin marketplace
+├── claude-plugin/      # The Claude Code plugin that starts the server
+│   ├── .claude-plugin/plugin.json # Plugin name, version and description
+│   └── .mcp.json      # The uvx command Claude Code runs for the server
 ├── claude.sh          # Claude Code integration script with FM_ROOT environment
 ├── Makefile           # Build system and development commands
 ├── docs/               # Documentation directory
@@ -20,18 +26,23 @@ foxmcp/
 ├── venv/              # Python virtual environment (created)
 ├── extension/         # Browser extension directory
 │   ├── manifest.json  # Extension configuration and permissions
-│   ├── background.js  # Service worker with WebSocket client and ping-pong
-│   ├── content.js     # Content script for page interaction
-│   └── popup/         # Extension popup UI
-│       ├── popup.html # Popup interface HTML with test button
-│       └── popup.js   # Popup JavaScript logic with ping test
+│   ├── settings.js    # Settings names, defaults and permission groups, shared by all scripts
+│   ├── background.js  # Persistent background script: WebSocket clients, permission checks, badge
+│   ├── content.js     # Content script for page interaction, overlay and cursor
+│   ├── options.html   # Settings page, shown inside about:addons
+│   ├── options.js     # Settings page logic: autosave, export, import, reset
+│   ├── ui.css         # Styles shared by the popup and the settings page
+│   ├── icons/         # Add-on and toolbar icons
+│   └── popup/         # Toolbar popup, a status panel
+│       ├── popup.html # Connection, sessions, agent tabs, follow and pause switches
+│       └── popup.js   # Popup logic
 ├── server/            # Python MCP server directory
 │   ├── __init__.py    # Python package init (for imports)
 │   ├── requirements.txt # Python dependencies
 │   ├── server.py       # WebSocket server implementation with ping-pong
-│   └── mcp_tools.py    # FastMCP tool definitions and handlers
-├── tools/             # Utility scripts and tools
-│   └── generate-channel-switch.sh # Generate JavaScript for channel switching
+│   ├── mcp_tools.py    # FastMCP tool definitions and handlers
+│   └── bidi.py         # WebDriver BiDi client for real mouse and keyboard input
+├── predefined-ex/     # Example predefined scripts
 └── tests/             # Test suite directory
     ├── conftest.py    # Pytest configuration and fixtures
     ├── pytest.ini     # Pytest settings
@@ -71,16 +82,33 @@ foxmcp/
 - **Purpose**: Extension configuration file for Firefox
 - **Key Features**:
   - Manifest V2 format for Firefox WebExtensions compatibility
-  - Permissions for tabs, windows, history, bookmarks, activeTab, storage, and all URLs
-  - Persistent background script registration
-  - Content script injection for all URLs
+  - Permissions for tabs, tabGroups, history, bookmarks, activeTab, storage, clipboardRead, clipboardWrite, webRequest, webRequestBlocking, and all URLs
+  - Persistent background script registration (`settings.js`, then `background.js`)
+  - Content script injection for all URLs (`settings.js`, then `content.js`)
   - Browser action popup UI configuration
+  - `options_ui` with `open_in_tab: false`, so the settings page shows inside `about:addons`
+
+### `settings.js`
+- **Purpose**: The settings a person can change, and their defaults
+- **Key Features**:
+  - `SETTINGS_DEFAULTS`: every setting with its default (pause, the ten permission groups, blocked sites, private windows, follow, idle release, overlay, cursor, typing, colour, badge, browser name, session ports, real input)
+  - `ACTION_PERMISSIONS`: which permission group each protocol action needs; actions not listed are always allowed
+  - `PERMISSION_NAMES`: the names shown on the settings page and in refusals
+  - `loadSettings()` and the blocked-site matching (`isBlockedHost`), which also blocks subdomains
+  - Loaded by the background script, the content script, the popup and the options page; every value lives in `storage.local`, per profile
+
+### `ui.css`
+- **Purpose**: Styles shared by the popup and the settings page
+- **Key Features**: Firefox's own system font, light and dark colours, and the overlay's orange as the one accent
 
 ### `background.js`
 - **Purpose**: Extension persistent background script
 - **Key Features**:
   - WebSocket client connection to MCP server (ws://localhost:8765)
-  - **Configurable connection parameters** with persistent storage via browser.storage.sync
+  - **Configurable connection parameters**: host and port in browser.storage.local, per profile; retry interval, max retries and ping timeout in browser.storage.sync
+  - **Connections to further servers** on the ports after the configured one (`scanExtraServers`), one per Claude session
+  - **Permission checks** (`refusalFor`): pause, permission groups, private windows and blocked sites, applied to every action before it runs
+  - **Agent tabs and toolbar badge**: tracks the tabs an agent works in and releases idle ones; the badge shows "off", "stop", or the number of agent tabs
   - **Test configuration override system** - reads testPort/testHostname with priority over regular settings
   - Automatic reconnection with configurable retry intervals and limits
   - Message routing to appropriate handler functions
@@ -112,62 +140,36 @@ foxmcp/
   - Message passing with background script using WebExtensions messaging
   - Error handling for page interactions
 
-### `popup/popup.html`
-- **Purpose**: Extension popup user interface
+### `popup/popup.html` and `popup/popup.js`
+- **Purpose**: Toolbar popup, a status panel rather than a settings form
 - **Key Features**:
-  - Connection status display with retry attempt information
-  - **Connection status display** for monitoring server connection
-  - **Force Reconnect button** for manual connection restart
-  - **Test result display area** with success/failure feedback
-  - **Collapsible configuration panel** with:
-    - Server URL input field
-    - Retry interval configuration (1000ms - 60000ms)
-    - Max retry attempts setting (-1 for infinite)
-    - Ping timeout configuration (1000ms - 30000ms)
-  - **Save Configuration button** with validation
-  - Server information display
-  - Clean, minimal design with enhanced status indicators
-
-### `popup/popup.js`
-- **Purpose**: Popup interface logic
-- **Key Features**:
-  - **Direct storage.sync access** for accurate configuration reading and writing
-  - **Test configuration override support** - displays effective values with priority handling
-  - **Real-time connection status checking** with retry information display
-  - **Connection monitoring** with visual feedback and status updates
-  - **Configuration management** with WebSocket URL parsing/building and form validation
-  - **Test override preservation** - saves maintain test configurations during normal use
-  - **Test indicator display** - shows when test configuration overrides are active
-  - **Force reconnect functionality** for manual connection control
-  - **Async communication** with background script using browser.runtime.sendMessage
-  - **Comprehensive error handling** with browser.runtime.lastError checks
-  - **Dynamic UI updates** based on connection state and configuration
-  - **Button state management** during testing and configuration operations
+  - Connection status, the server's address, and any other sessions on the ports after it
+  - Whether real input is on
+  - This browser's name, with a link to rename it on the settings page
+  - The tabs an agent is working in, each with a link to go to it and a Release button
+  - "Show me the tab the agent works in" and "Pause the agent" switches
+  - Reconnect and Settings buttons
+  - With no server connected, a setup request to copy into Claude Code
 
 ### `options.html` & `options.js`
-- **Purpose**: Extension options/preferences page
+- **Purpose**: The add-on's settings page, shown inside `about:addons`
 - **Key Features**:
-  - **Comprehensive configuration interface** with server settings and advanced options
-  - **Direct storage.sync integration** for reading and writing configuration
-  - **Test configuration override support** - displays effective values and warns when test overrides are active
-  - **Server configuration**: Hostname, port, and WebSocket URL management
-  - **Advanced settings**: Retry intervals, max retries, ping timeout configuration
-  - **Connection monitoring** with real-time status updates
-  - **Connection status display** with real-time updates
-  - **Configuration preservation** - all saves maintain test overrides and existing settings
-  - **Form validation** with comprehensive error checking and user feedback
-  - **Reset to defaults** functionality with confirmation
-  - **Professional UI design** with organized sections and help text
+  - Sections for what the agent may do, how it looks on the page, the connection, real input, and backup and reset
+  - **Autosave**: every element with `data-setting` is bound to that key of `settings.js` and saves as it changes; there is no Save button
+  - Host and port go through the background script, which reconnects; retry interval, max retries and ping timeout go to `storage.sync`
+  - **Export, import and reset**: export writes a JSON file, import accepts only known keys of the right type and keeps this profile's name, reset needs a second press
+  - **Test configuration override support**: shows when `testPort`/`testHostname` from the test suite are in effect
+  - See [configuration.md](configuration.md#the-add-ons-settings-page) for every setting
 
 ## Server Directory (`/server`)
 
 ### `requirements.txt`
 - **Purpose**: Python package dependencies
-- **Dependencies**:
-  - `fastmcp>=1.0.0` - FastMCP framework for MCP protocol
-  - `websockets>=12.0` - WebSocket server implementation
-  - `asyncio` - Async/await support
-  - `json` - JSON message parsing
+- **Dependencies** (the same list as `pyproject.toml`):
+  - `websockets>=12.0` - WebSocket server implementation, and the BiDi client
+  - `fastmcp>=3.0.0,<4` - FastMCP framework for MCP protocol
+  - `uvicorn>=0.31.1` - HTTP server for MCP over HTTP
+  - `pydantic>=2.11.7` - Tool parameter models
 
 ### `server.py`
 - **Purpose**: Main WebSocket server implementation
@@ -208,7 +210,10 @@ foxmcp/
   - **Complete action mapping** between MCP tools and WebSocket actions
   - **Full response correlation implementation** with timeout handling
   - **Response type processing** (success data extraction, error handling)
-  - **15-second timeout** for extension responses with graceful failure handling
+  - **30-second default timeout** for extension responses (`send_request_and_wait`)
+  - **Failures as MCP errors**: a result that reads as a failure is raised as a `ToolError`, so the client sees `isError`
+  - **Optional `status` argument** on the tools that act in a tab, shown on the page's overlay
+  - **Real input**: click, hover, drag, type and press-key tools use `bidi.py` when Firefox has remote control, and scripted events otherwise
   - **Predefined Script Execution System**:
     - `content_execute_predefined()` - Execute external scripts that generate JavaScript
     - **Environment variable configuration**: `FOXMCP_EXT_SCRIPTS` directory path
@@ -217,6 +222,30 @@ foxmcp/
     - **External script execution**: Subprocess execution with 30-second timeout
     - **JavaScript injection**: Generated script output executed in browser tabs
     - **Comprehensive error handling**: Script validation, execution, and browser injection errors
+
+### `bidi.py`
+- **Purpose**: Real (trusted) mouse and keyboard input through WebDriver BiDi
+- **Key Features**:
+  - Probes Firefox's usual remote control ports, 9222 to 9229 (`LIKELY_PORTS`)
+  - `BidiSession`: one short session per action, since Firefox allows one at a time; a `session.new` that times out is ended in the background
+  - Finds the tab by the token the content script set on `<html>` (`data-foxmcp-tab`)
+  - Click, point click, hover, drag (with a slow-fast-slow move and short holds at each end), typing (line breaks as Shift+Enter) and key combinations such as `Control+a`
+
+## Packaging and Plugin
+
+### `pyproject.toml`
+- **Purpose**: Makes the server an installable Python package, so `uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.8.1 mcp-bridge-for-firefox --stdio` runs it with no clone
+- **Key Features**: Python 3.10 or newer; the code in `server/` is installed as the `mcp_bridge_for_firefox` package; the `mcp-bridge-for-firefox` command runs `server.run`
+
+### `.claude-plugin/marketplace.json`
+- **Purpose**: Lists the repo as a Claude Code plugin marketplace, so `claude plugin marketplace add MashdorDev/mcp-bridge-for-firefox` finds it
+- **Key Features**: One plugin, `firefox`, whose source is `./claude-plugin`
+
+### `claude-plugin/`
+- **Purpose**: The plugin `claude plugin install firefox@mcp-bridge-for-firefox` installs
+- **Files**:
+  - `.claude-plugin/plugin.json`: name, display name, version and description
+  - `.mcp.json`: registers the `firefox` MCP server as the `uvx` command above, pinned to the release tag, so Claude Code starts it in every session
 
 ## Communication Flow
 
@@ -246,7 +275,7 @@ foxmcp/
 - ✅ **Firefox WebExtensions API Integration**: Complete browser.* API implementations for all handlers
 - ✅ **Response Correlation**: Full async response handling with UUID-based correlation
 - ✅ **Configuration System**: Configurable retry intervals and connection parameters
-- ⏳ **FastMCP Integration**: Actual MCP server framework setup pending
+- ✅ **FastMCP Integration**: MCP over HTTP and over stdio
 - ⏳ **Error Handling**: Comprehensive error scenarios (partially implemented)
 - ⏳ **Integration Testing**: End-to-end testing with real Firefox extension and MCP client
 

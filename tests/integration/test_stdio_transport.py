@@ -24,6 +24,7 @@ import pytest_asyncio
 import test_imports  # Automatic path setup
 from port_coordinator import get_port_by_type
 from test_config import connect_as_extension
+from server.server import EXTRA_SERVER_PORTS
 
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -340,27 +341,35 @@ class TestLifetime:
             probe.bind(('localhost', websocket_port))
 
     @pytest.mark.asyncio
-    async def test_a_taken_websocket_port_fails_loudly(self, websocket_port):
-        """Only one server can serve the extension, and the second must say so
+    async def test_every_taken_websocket_port_fails_loudly(self, websocket_port):
+        """With its port and all the extra ones taken, a server must say so
 
-        Easy to hit in stdio mode, where every MCP client launches a server of its
-        own. The exit code is what the client reports; the message is for the log
-        the user goes looking at afterwards.
+        A taken port moves a server to one of the next EXTRA_SERVER_PORTS (one
+        server per Claude session). Only when all of them are held does it fail.
+        The exit code is what the client reports; the message is for the log the
+        user goes looking at afterwards.
         """
-        with socket.socket() as holder:
-            holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            holder.bind(('localhost', websocket_port))
-            holder.listen(1)
+        holders = []
+        try:
+            for port in range(websocket_port, websocket_port + 1 + EXTRA_SERVER_PORTS):
+                holder = socket.socket()
+                holder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                holder.bind(('localhost', port))
+                holder.listen(1)
+                holders.append(holder)
 
             client = await StdioClient(websocket_port).start()
             client.process.stdin.close()
             await asyncio.wait_for(client.process.wait(), 30.0)
             stderr = (await client.process.stderr.read()).decode()
             stdout = await client.process.stdout.read()
+        finally:
+            for holder in holders:
+                holder.close()
 
         assert client.process.returncode != 0, "A server that cannot listen has failed"
         assert stdout == b'', f"Nothing may be written to stdout: {stdout!r}"
-        assert 'Another FoxMCP server is most likely already running' in stderr, stderr
+        assert 'held by another session' in stderr, stderr
 
 
 class TestOptionsThatCannotBeCombined:
