@@ -16,7 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **On Windows a second server no longer takes over port 8765 from the first.** `SO_REUSEADDR` lets two sockets bind the same port there; the free-port test now uses `SO_EXCLUSIVEADDRUSE`.
 - **`content_type` checks that the whole text arrived.** Rich editors could replace earlier pieces of a long text and report success with part of it in the field; the caret is now kept at the end between pieces and a short result is reported as an error.
-- **Uploaded files are readable by the page.** Files are rebuilt in the page's own realm, so a page that inspects them (Miro's image upload) can read them.
+- **Uploaded files are rebuilt in the page's own realm**, so the page can read them like a file a person picked. Miro's "Upload from device" still hangs on its spinner.
+- **Typed text stays in the editor's last paragraph.** In ProseMirror editors (ChatGPT) each piece of a long text became a paragraph of its own.
+- **`content_upload_files` refuses a disabled file input** instead of reporting files attached that the page dropped.
+- **An overlay left by an older version is rebuilt** after an update, instead of breaking every action in tabs that stayed open.
 - **The agent overlay shows from the agent's first action.** It used to appear only once the agent took a snapshot, clicked or typed, so a session that opened a tab, navigated and read the page showed nothing for its first several actions. Opening a tab, navigating, reading text or HTML and running a script now show it too; after a navigation it is shown again once the new page has loaded.
 - **`create_window(focused=False)` now leaves focus where it was.** Firefox focuses every new window and ignores `focused: false`, so the window opened in front regardless. The extension now hands focus back to the window that had it, and the result says `(focused)` when the new window has focus.
 - **`update_window(focused=False)` is refused instead of ignored.** Firefox has no way to take focus away from a window and drops the flag without an error. The tool now says so and points to `focus_window`.
