@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "firefox": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.8.1",
+        "mcp-bridge-for-firefox",
+        "--stdio"
+      ]
+    }
+  }
+}

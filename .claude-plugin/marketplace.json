@@ -1,0 +1,15 @@
+{
+  "name": "mcp-bridge-for-firefox",
+  "owner": {
+    "name": "MashdorDev",
+    "url": "https://github.com/MashdorDev"
+  },
+  "description": "MCP Bridge for Firefox: lets Claude Code read, click and type in Firefox",
+  "plugins": [
+    {
+      "name": "firefox",
+      "source": "./claude-plugin",
+      "description": "Starts the MCP Bridge for Firefox server, so Claude Code can use Firefox through the MCP Bridge add-on"
+    }
+  ]
+}
