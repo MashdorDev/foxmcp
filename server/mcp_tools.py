@@ -2169,8 +2169,9 @@ class FoxMCPTools:
             image file (give path)
 
             The image goes on the clipboard as PNG. Paste it into a page with
-            content_paste, or the person can paste it with Ctrl+V. Canvas apps
-            such as Miro take an image this way when a file input will not do.
+            content_paste, or the person can paste it with Ctrl+V. To put an
+            image on a Miro board, use content_upload_files on its "Upload from
+            device" instead: Miro ignores pastes it did not get from a person.
 
             Args:
                 tab_id: ID of the tab holding the image
@@ -2205,9 +2206,8 @@ class FoxMCPTools:
             The page gets a real paste event with the clipboard's contents, text or
             an image (see content_copy_image). Firefox lets the extension paste only
             into a textarea: give one as the target to paste into it. With no
-            target, or another kind, the paste goes to the page as a whole, which
-            is what a canvas app such as Miro listens for: select the item or spot
-            there first.
+            target, or another kind, the paste goes to the page as a whole, for
+            pages that listen for it there. Miro ignores it.
 
             Args:
                 tab_id: ID of the tab
