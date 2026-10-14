@@ -175,9 +175,8 @@ class TestUploadFiles:
 
         begin = recorder.requests[0]
         assert begin["action"] == "content.upload_begin"
-        assert begin["data"]["files"] == [
-            {"name": "a.txt", "relativePath": "Assets/a.txt"},
-            {"name": "b.bin", "relativePath": "Assets/sub/b.bin"}]
+        assert [(f["name"], f["relativePath"]) for f in begin["data"]["files"]] == [
+            ("a.txt", "Assets/a.txt"), ("b.bin", "Assets/sub/b.bin")]
 
     @pytest.mark.asyncio
     async def test_large_files_are_split_into_chunks(self, upload, recorder, folder):
@@ -204,7 +203,17 @@ class TestUploadFiles:
     async def test_single_file_has_no_relative_path(self, upload, recorder, folder):
         await upload(tab_id=4, path=str(folder / "a.txt"), selector="#plain")
 
-        assert recorder.requests[0]["data"]["files"] == [{"name": "a.txt", "relativePath": ""}]
+        assert recorder.requests[0]["data"]["files"] == [
+            {"name": "a.txt", "relativePath": "", "type": "text/plain"}]
+
+    @pytest.mark.asyncio
+    async def test_files_carry_their_mime_type(self, upload, recorder, tmp_path):
+        # Miro's image upload never finished for a file with an empty type
+        image = tmp_path / "shot.png"
+        image.write_bytes(b"not really a png")
+        await upload(tab_id=4, path=str(image), selector="#plain")
+
+        assert recorder.requests[0]["data"]["files"][0]["type"] == "image/png"
 
     @pytest.mark.asyncio
     async def test_missing_path_sends_nothing(self, upload, recorder, tmp_path):
