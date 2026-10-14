@@ -8,6 +8,21 @@
 let websocket = null;
 let isConnected = false;
 
+// The person's settings (settings.js), kept current as they change them
+let settings = { ...SETTINGS_DEFAULTS };
+loadSettings().then(saved => { settings = saved; updateBadge(); });
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  for (const [key, change] of Object.entries(changes)) {
+    if (key in SETTINGS_DEFAULTS) settings[key] = change.newValue ?? SETTINGS_DEFAULTS[key];
+  }
+  if ('paused' in changes || 'badgeEnabled' in changes) updateBadge();
+  // A paused agent lets go of its tabs, so the person gets the page back
+  if (changes.paused && changes.paused.newValue) {
+    for (const tabId of [...agentTabs.keys()]) releaseAgentTab(tabId);
+  }
+});
+
 
 // Debug logging configuration - set to true to send extension logs to server
 const ENABLE_DEBUG_LOGGING_TO_SERVER = false;
@@ -142,9 +157,6 @@ browser.storage.onChanged.addListener((changes, area) => {
 
 function connectToMCPServer() {
   try {
-    console.log('🔍 CONNECT ATTEMPT - Stack trace:');
-    console.trace();
-
     // IMPORTANT: Only one WebSocket connection is allowed at a time
     // Disconnect any existing connection first to prevent multiple connections
     if (websocket && websocket.readyState !== WebSocket.CLOSED) {
@@ -155,7 +167,6 @@ function connectToMCPServer() {
     // Compute WebSocket URL dynamically using current config
     const WS_URL = `ws://${CONFIG.hostname}:${CONFIG.port}`;
     console.log(`🔗 Connecting to ${WS_URL} (attempt ${retryAttempts + 1})`);
-    console.log(`🔧 Using CONFIG:`, JSON.stringify(CONFIG, null, 2));
 
     const socket = new WebSocket(WS_URL);
     websocket = socket;
@@ -163,14 +174,10 @@ function connectToMCPServer() {
     socket.onopen = () => {
       console.log('Connected to MCP server');
       isConnected = true;
+      updateBadge();
       retryAttempts = 0; // Reset retry counter on successful connection
       connectionRetryAttempts = 0; // Reset connection retry counter
       sendHello(socket).catch(error => console.error('Could not send hello:', error));
-
-      // Send an immediate debug message to test after a small delay
-      setTimeout(() => {
-        console.log('🔌 WebSocket connection established and ready');
-      }, 200);
 
       // Flush any buffered debug logs
       if (typeof window.flushDebugLogBuffer === 'function') {
@@ -181,8 +188,6 @@ function connectToMCPServer() {
     };
 
     socket.onmessage = async (event) => {
-      // Test debug message right when we receive a message
-      console.log('📨 Extension received message from server');
       await handleMessage(JSON.parse(event.data), socket);
     };
 
@@ -201,6 +206,7 @@ function connectToMCPServer() {
 
       console.log('Disconnected from MCP server');
       isConnected = false;
+      updateBadge();
       clearAllMonitors('the connection to the server dropped');
       releaseAgentTabsOf(socket);
       scheduleReconnect();
@@ -217,7 +223,7 @@ function connectToMCPServer() {
 
 // More servers, one per MCP client: under --stdio every client launches its own,
 // and a server that finds the configured port taken moves to one of the next
-// EXTRA_SERVER_PORTS (see server.py). Each gets a connection of its own here, so
+// ports (EXTRA_SERVER_PORTS in server.py; how many are scanned is a setting). Each gets a connection of its own here, so
 // every Claude session can use the browser at the same time. Replies go back on
 // the connection the request came in on (replySockets).
 //
@@ -226,7 +232,6 @@ function connectToMCPServer() {
 // only while the main connection is up, and probes one port at a time; probing
 // all of them at once queued the main connection behind them and it never got
 // through.
-const EXTRA_SERVER_PORTS = 4;
 const EXTRA_SERVER_SCAN_MS = 15000;
 const extraSockets = new Map(); // port -> socket
 let extraScanRunning = false;
@@ -243,12 +248,14 @@ function connectExtraServer(port) {
     extraSockets.set(port, socket);
     socket.onopen = () => {
       console.log(`Connected to an additional MCP server on port ${port}`);
+      updateBadge();
       sendHello(socket).catch(error => console.error('Could not send hello:', error));
       settled();
     };
     socket.onmessage = async (event) => handleMessage(JSON.parse(event.data), socket);
     socket.onclose = () => {
       if (extraSockets.get(port) === socket) extraSockets.delete(port);
+      updateBadge();
       releaseAgentTabsOf(socket);
       settled();
     };
@@ -260,7 +267,7 @@ async function scanExtraServers() {
   if (extraScanRunning) return;
   extraScanRunning = true;
   try {
-    for (let i = 1; i <= EXTRA_SERVER_PORTS; i++) {
+    for (let i = 1; i <= settings.extraServerPorts; i++) {
       if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
       const port = CONFIG.port + i;
       const existing = extraSockets.get(port);
@@ -315,8 +322,6 @@ function updateConfig(newConfig) {
 // Load configuration from storage on startup
 async function loadConfig() {
   console.log('📥 Loading configuration from storage...');
-  console.log('🔍 LOADCONFIG - Stack trace:');
-  console.trace();
 
   // Load from storage - browser.storage.sync.get() always succeeds
   const result = await browser.storage.sync.get({
@@ -372,7 +377,7 @@ function disconnect() {
 }
 
 // The connection each request came in on, so its reply goes back there. Several
-// servers can be connected at once (one per MCP client, see EXTRA_SERVER_PORTS).
+// servers can be connected at once (one per MCP client, see scanExtraServers).
 const replySockets = new Map(); // request id -> socket
 // The agent call behind each request, for handlers that learn the tab late (tabs.create)
 const agentCalls = new Map(); // request id -> { tool, status }
@@ -386,6 +391,12 @@ async function handleMessage(message, socket = websocket) {
   // Handle ping-pong for connection testing
   if (action === 'ping') {
     sendResponse(id, 'ping', { message: 'pong', timestamp: new Date().toISOString() });
+    return;
+  }
+
+  const refusal = await refusalFor(action, data || {});
+  if (refusal) {
+    sendError(id, 'NOT_ALLOWED', refusal);
     return;
   }
 
@@ -406,6 +417,46 @@ async function handleMessage(message, socket = websocket) {
       markAgentActive(agentTab, { state: 'thinking' });
     }
   }
+}
+
+// Why the person's settings rule an action out, or null when it may go ahead
+const PERMISSION_OF = Object.fromEntries(Object.entries(ACTION_PERMISSIONS)
+  .flatMap(([permission, actions]) => actions.map(action => [action, permission])));
+
+async function refusalFor(action, data) {
+  const permission = PERMISSION_OF[action];
+  if (!permission) return null;
+  if (settings.paused) {
+    return 'The person using this Firefox has paused the agent. They can resume it from the MCP Bridge button in the toolbar.';
+  }
+  if (!settings[permission]) {
+    return `"${PERMISSION_NAMES[permission]}" is turned off in this browser's MCP Bridge settings.`;
+  }
+  if (action === 'windows.create' && data.incognito && !settings.allowPrivate) {
+    return 'The agent is not allowed in private windows (MCP Bridge settings).';
+  }
+  const urls = [];
+  if (data.url) urls.push({ url: data.url });
+  let tabId = data.tabId;
+  if (action === 'tabs.captureVisibleTab') {
+    const [active] = await browser.tabs.query({ active: true, ...(data.windowId ? { windowId: data.windowId } : { currentWindow: true }) });
+    tabId = active && active.id;
+  }
+  if (tabId != null) {
+    const tab = await browser.tabs.get(Number(tabId)).catch(() => null);
+    if (tab) urls.push({ url: tab.url, incognito: tab.incognito });
+  }
+  for (const { url, incognito } of urls) {
+    if (incognito && !settings.allowPrivate) {
+      return 'This tab is in a private window, and the agent is not allowed in private windows (MCP Bridge settings).';
+    }
+    let host = '';
+    try { host = new URL(url).hostname; } catch (error) { continue; }
+    if (isBlockedHost(host, settings.blockedSites)) {
+      return `${host} is on this browser's blocked sites list (MCP Bridge settings).`;
+    }
+  }
+  return null;
 }
 
 async function routeAction(id, action, data) {
@@ -484,22 +535,47 @@ function sendError(id, code, message, details = {}) {
   socket.send(JSON.stringify(errorMessage));
 }
 
-function sendDebugLog(message, level = 'log') {
-  // Check WebSocket state directly instead of relying on isConnected flag
-  if (!websocket || websocket.readyState !== WebSocket.OPEN) return;
+// The toolbar button says how things stand without opening the popup: "off"
+// when no server is connected, otherwise how many tabs an agent is working in.
+function updateBadge() {
+  const extra = [...extraSockets.values()].filter(socket => socket.readyState === WebSocket.OPEN).length;
+  const servers = (isConnected ? 1 : 0) + extra;
+  if (!settings.badgeEnabled) {
+    browser.browserAction.setBadgeText({ text: '' });
+  } else if (settings.paused) {
+    browser.browserAction.setBadgeText({ text: 'stop' });
+    browser.browserAction.setBadgeBackgroundColor({ color: '#c50042' });
+    browser.browserAction.setTitle({ title: 'MCP Bridge for Firefox: agent paused' });
+    return;
+  }
+  if (!servers) {
+    if (settings.badgeEnabled) browser.browserAction.setBadgeText({ text: 'off' });
+    browser.browserAction.setBadgeBackgroundColor({ color: '#8f8f9d' });
+    browser.browserAction.setTitle({ title: 'MCP Bridge for Firefox: not connected' });
+    return;
+  }
+  if (settings.badgeEnabled) browser.browserAction.setBadgeText({ text: agentTabs.size ? String(agentTabs.size) : '' });
+  browser.browserAction.setBadgeBackgroundColor({ color: '#d97757' });
+  browser.browserAction.setTitle({ title: `MCP Bridge for Firefox: ${servers} session${servers > 1 ? 's' : ''}` +
+    (agentTabs.size ? `, agent working in ${agentTabs.size} tab${agentTabs.size > 1 ? 's' : ''}` : '') });
+}
 
-  const debugMessage = {
-    id: `debug_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-    type: 'debug_log',
-    action: 'debug',
-    data: {
-      level: level,
-      message: message,
-      timestamp: new Date().toISOString()
-    }
+// What the popup shows: the servers this browser is connected to and the
+// tabs an agent is working in
+async function connectionDetails() {
+  const browserName = (await browser.storage.local.get({ browserName: '' })).browserName;
+  const tabs = await Promise.all([...agentTabs].map(([tabId, entry]) =>
+    browser.tabs.get(tabId)
+      .then(tab => ({ tabId, title: tab.title || tab.url, label: entry.label, state: entry.state }))
+      .catch(() => null)));
+  return {
+    connected: isConnected,
+    retryAttempts,
+    config: CONFIG,
+    browserName,
+    extraPorts: [...extraSockets].filter(([, socket]) => socket.readyState === WebSocket.OPEN).map(([port]) => port),
+    agentTabs: tabs.filter(Boolean),
   };
-
-  websocket.send(JSON.stringify(debugMessage));
 }
 
 // Handle popup requests for connection status
@@ -514,11 +590,12 @@ browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'getConnectionStatus') {
-    sendResponse({
-      connected: isConnected,
-      retryAttempts: retryAttempts,
-      config: CONFIG
-    });
+    connectionDetails().then(sendResponse);
+    return true;
+  }
+
+  if (request.action === 'releaseAgentTab') {
+    sendResponse({ released: releaseAgentTab(request.tabId) });
     return true;
   }
 
@@ -883,12 +960,11 @@ async function getCurrentTabUrl(tabId) {
 // Tabs an agent is working in. The page shows the overlay, the cursor and a
 // marker in the tab strip from the agent's first action until the agent says it
 // is done (tabs_release), the server that sent the work disconnects, or
-// AGENT_IDLE_RELEASE_MS pass with no action in the tab.
+// releaseAfterMinutes (a setting) pass with no action in the tab.
 //
 // Each entry holds what the page shows: a state the cursor animates (reading,
 // clicking, typing, waiting, working, thinking) and a first-person label, the
 // agent's own status line when it gave one.
-const AGENT_IDLE_RELEASE_MS = 5 * 60 * 1000;
 const agentTabs = new Map(); // tab id -> { socket, state, label, at }
 
 // What each action looks like on the page when the agent gives no status line
@@ -935,16 +1011,17 @@ async function markAgentActive(tabId, { state = 'working', label = null, agentSt
     agentStatus: agentStatus || (state === 'thinking' && previous ? previous.agentStatus : null),
     at: Date.now()
   });
+  if (!previous) updateBadge();
   sendAgentState(tabId);
   // "Follow the agent" brings forward whichever tab the agent acts in next
   if (state !== 'thinking') {
-    const { followAgent } = await browser.storage.local.get({ followAgent: false });
-    if (followAgent) browser.tabs.update(tabId, { active: true }).catch(() => {});
+    if (settings.followAgent) browser.tabs.update(tabId, { active: true }).catch(() => {});
   }
 }
 
 function releaseAgentTab(tabId) {
   if (!agentTabs.delete(tabId)) return false;
+  updateBadge();
   browser.tabs.sendMessage(tabId, { action: 'agentRelease' }).catch(() => {});
   return true;
 }
@@ -958,7 +1035,7 @@ function releaseAgentTabsOf(socket) {
 setInterval(() => {
   const now = Date.now();
   for (const [tabId, entry] of agentTabs) {
-    if (now - entry.at > AGENT_IDLE_RELEASE_MS) releaseAgentTab(tabId);
+    if (now - entry.at > settings.releaseAfterMinutes * 60 * 1000) releaseAgentTab(tabId);
   }
 }, 30000);
 
@@ -970,7 +1047,9 @@ browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
   else sendAgentState(tabId);
 });
 
-browser.tabs.onRemoved.addListener(tabId => agentTabs.delete(tabId));
+browser.tabs.onRemoved.addListener(tabId => {
+  if (agentTabs.delete(tabId)) updateBadge();
+});
 
 // Helper function to send message with retry logic for content script
 async function sendMessageWithRetry(tabId, message, maxRetries = 5, delayMs = 2000) {
@@ -995,6 +1074,8 @@ async function sendMessageWithRetry(tabId, message, maxRetries = 5, delayMs = 20
       // reloaded) never got content.js, and no amount of waiting fixes that.
       if (attempt < maxRetries && error.message.includes('Receiving end does not exist')) {
         try {
+          // settings.js may already be there, in which case loading it again throws
+          await browser.tabs.executeScript(tabId, { file: '/settings.js' }).catch(() => {});
           await browser.tabs.executeScript(tabId, { file: '/content.js' });
           continue;
         } catch (injectError) {
@@ -1685,9 +1766,6 @@ function captureRequestEvent(monitorId, eventType, details) {
     });
     capturedRequests.set(monitorId, captured);
     request.listed_by.add(monitorId);
-
-    const sizeInfo = request.response_content_length ? ` (${request.response_content_length} bytes)` : '';
-    console.log(`📋 Captured request: ${request.method} ${request.url} -> ${request.status_code || 'ERROR'}${sizeInfo}`);
   }
 }
 
@@ -1857,9 +1935,6 @@ async function handleRequestsAction(id, action, data) {
   try {
     switch (action) {
       case 'requests.start_monitoring':
-        // Always send debug message to test if WebSocket works
-        console.log('📡 ALWAYS: requests.start_monitoring called');
-
         const monitor_id = `mon_${Date.now()}`;
         const monitor = {
           id: monitor_id,
@@ -1869,9 +1944,6 @@ async function handleRequestsAction(id, action, data) {
           started_at: new Date().toISOString(),
           status: 'active'
         };
-
-        // Debug: Check what options we received
-        console.log(`📡 DEBUG: Monitor options received: ${JSON.stringify(monitor.options)}`);
 
         // Register the monitor before the listeners go up, so the first request
         // through onBeforeRequest can already find it and tap its body.
@@ -2509,14 +2581,13 @@ console.log('🚀 Extension starting - loading configuration...');
 
 // Initialize extension: load config then connect
 async function initializeExtension() {
+  updateBadge();
   try {
     console.log('🚀 Initializing extension...');
-    console.log('📍 BEFORE loadConfig() - CONFIG:', JSON.stringify(CONFIG, null, 2));
 
     await loadConfig();
 
     console.log('✅ Configuration loaded successfully');
-    console.log('📍 AFTER loadConfig() - CONFIG:', JSON.stringify(CONFIG, null, 2));
 
     // Connect after config load
     console.log('🔌 Connecting to MCP server...');

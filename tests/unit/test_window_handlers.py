@@ -11,6 +11,7 @@ import os
 
 import test_imports  # Automatic path setup
 from server.server import FoxMCPServer
+from fastmcp.exceptions import ToolError
 
 
 class TestWindowHandlers:
@@ -251,7 +252,10 @@ def call_tool(stub_server):
 
     async def call(name, **kwargs):
         tool = await tools.mcp.get_tool(name)
-        return await tool.fn(**kwargs)
+        try:
+            return await tool.fn(**kwargs)
+        except ToolError as error:  # what the client sees as the error text
+            return str(error)
 
     return call
 

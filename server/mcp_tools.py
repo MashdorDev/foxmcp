@@ -13,6 +13,7 @@ import functools
 import inspect
 import logging
 import mimetypes
+import re
 import uuid
 import os
 import subprocess
@@ -23,6 +24,7 @@ from datetime import datetime
 from typing import Annotated, Dict, Any, Optional, List, TypedDict, Union
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -45,15 +47,15 @@ UPLOAD_CHUNK_BYTES = 512 * 1024
 # send_request_and_wait so every request a tool sends carries them to the page.
 AGENT_CALL = contextvars.ContextVar('agent_call', default=None)
 
+# How a tool's text result reads when the tool failed
+FAILURE_RESULT = re.compile(r"(Failed to|Unable to|Error |Unexpected error|Window \S+ not found)")
+
 # The overlay label is one line; a status longer than this is cut.
 MAX_STATUS_LENGTH = 80
 
 STATUS_DESCRIPTION = (
-    'Optional. A few words in the first person saying what you are doing, shown '
-    'to the person watching on the page, e.g. "Reading the board" or "Uploading '
-    'the new cover image". Keep the same line across the calls that make up one '
-    'step, and call tabs_release when you are done with a tab so the "AI agent '
-    'is working" overlay goes away.')
+    'A few words in the first person shown on the page while you work, e.g. '
+    '"Reading the board". Call tabs_release when done with the tab.')
 STATUS_TYPE = Annotated[Optional[str], Field(description=STATUS_DESCRIPTION)]
 
 
@@ -264,9 +266,25 @@ class FoxMCPTools:
             self.group_by_tool[fn.__name__] = group
             if group in self.disabled_groups and fn.__name__ not in self.enabled_tools:
                 return fn
-            return self.mcp.tool()(self._with_status(fn))
+            return self.mcp.tool()(self._with_status(self._failures_as_errors(fn)))
 
         return register
+
+    def _failures_as_errors(self, fn):
+        """Report a tool's failure as an MCP error rather than as a result
+
+        Tools say what went wrong in plain text ("Failed to type: ..."), and a
+        client took that for success, so an agent moved on after a step that
+        never happened. A result that starts like a failure is raised instead,
+        and the client sees isError with the same text.
+        """
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            result = await fn(*args, **kwargs)
+            if isinstance(result, str) and FAILURE_RESULT.match(result):
+                raise ToolError(result)
+            return result
+        return wrapper
 
     def _with_status(self, fn):
         """Give a tool the optional `status` argument shown to the person watching
@@ -281,7 +299,8 @@ class FoxMCPTools:
         called it, so the tab can be released when that session ends.
         """
         signature = inspect.signature(fn)
-        if 'status' in signature.parameters:
+        # Only tools that act in a tab have a page to show the line on
+        if 'status' in signature.parameters or not ('tab_id' in signature.parameters or fn.__name__ == 'tabs_create'):
             return fn
 
         @functools.wraps(fn)

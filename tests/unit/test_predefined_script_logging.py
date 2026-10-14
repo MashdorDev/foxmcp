@@ -14,6 +14,7 @@ import stat
 import pytest
 
 import test_imports  # Automatic path setup
+from fastmcp.exceptions import ToolError
 from server.mcp_tools import (
     MAX_LOGGED_ARG_LENGTH,
     FoxMCPTools,
@@ -47,7 +48,10 @@ def run_script():
 
     async def call(**kwargs):
         tool = await tools.mcp.get_tool("content_execute_predefined")
-        return await tool.fn(**kwargs)
+        try:
+            return await tool.fn(**kwargs)
+        except ToolError as error:  # what the client sees as the error text
+            return str(error)
 
     return call
 

@@ -6,6 +6,7 @@ A real MCP client that can connect to the FoxMCP server and make tool calls
 import asyncio
 import uuid
 from typing import Dict, Any, List
+from fastmcp.exceptions import ToolError
 
 # Optional import - only needed for HTTP MCP client
 try:
@@ -203,6 +204,10 @@ class DirectMCPTestClient:
                 }
                 
             except Exception as tool_error:
+                if isinstance(tool_error, ToolError):
+                    # A tool's own failure: the client gets its text as an error
+                    return {'content': str(tool_error), 'isError': True,
+                            'success': False, 'error': str(tool_error)}
                 return {
                     'content': f"Tool execution error: {tool_error}",
                     'isError': True,

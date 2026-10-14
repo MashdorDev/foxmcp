@@ -4,8 +4,6 @@
  * Licensed under the MIT License - see LICENSE file for details
  */
 
-// Content script for page interaction
-console.log('FoxMCP content script loaded');
 
 // Elements a snapshot lists. Anything clickable or editable, plus headings so
 // the listing reads as an outline of the page rather than a bag of controls.
@@ -150,7 +148,8 @@ async function typeInto(el, text, clear) {
   }
   // In a hidden tab the text goes in at once: nobody is watching, and Firefox
   // throttles its timers so hard that a 300-character text took minutes.
-  const size = document.hidden ? Math.max(1, text.length)
+  // Typing animation can also be turned off in the settings
+  const size = document.hidden || !settings.typingAnimated ? Math.max(1, text.length)
     : Math.max(1, Math.ceil(text.length * TYPE_STEP_MS / TYPE_ANIMATION_MS));
   const pieces = [];
   for (let i = 0; i < text.length; i += size) pieces.push(text.slice(i, i + size));
@@ -302,7 +301,6 @@ async function setInputFiles(el, files, relativePaths) {
 // releases the tab; the background script releases it when the agent's server
 // goes, or after five minutes with no action.
 const OVERLAY_ID = 'foxmcp-agent-overlay';
-const CURSOR_MOVE_MS = 350;
 const OVERLAY_LABEL = 'AI agent is working in this tab';
 // How long the ring stays on a field after the last piece of text goes in.
 const FIELD_LINGER_MS = 800;
@@ -313,6 +311,31 @@ let fieldTimer = null;
 let idleTimer = null;
 let cursorPos = null;
 let agentLabel = OVERLAY_LABEL;
+
+// The person's settings for what the overlay shows (settings.js), applied
+// as they change them, without a reload
+let settings = { ...SETTINGS_DEFAULTS };
+loadSettings().then(saved => { settings = saved; applyOverlaySettings(); });
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  for (const [key, change] of Object.entries(changes)) {
+    if (key in SETTINGS_DEFAULTS) settings[key] = change.newValue ?? SETTINGS_DEFAULTS[key];
+  }
+  applyOverlaySettings();
+});
+
+function applyOverlaySettings() {
+  const host = document.getElementById(OVERLAY_ID);
+  if (host) {
+    host.style.setProperty('--c', settings.overlayColor);
+    host.classList.toggle('no-border', !settings.overlayBorder);
+    host.classList.toggle('no-label', !settings.overlayLabel);
+    host.classList.toggle('no-cursor', !settings.cursorEnabled);
+    host.classList.toggle('label-top', settings.labelPosition === 'top');
+    if (!settings.overlayEnabled) host.style.opacity = '0';
+  }
+  if (!settings.tabMarker || !settings.overlayEnabled) stopTabMarker();
+}
 
 function overlayRoot() {
   let host = document.getElementById(OVERLAY_ID);
@@ -329,15 +352,17 @@ function overlayRoot() {
     const root = host.attachShadow({ mode: 'open' });
     root.innerHTML = `
       <style>
-        :host { transition: opacity .4s; }
-        .glow { position:fixed; inset:0; box-shadow: inset 0 0 0 2px rgba(217,119,87,.9), inset 0 0 22px rgba(217,119,87,.5);
+        :host { transition: opacity .4s; --c: rgb(217,119,87); }
+        :host(.no-border) .glow, :host(.no-label) .label, :host(.no-cursor) .pointer { display:none; }
+        :host(.label-top) .label { bottom:auto; top:14px; }
+        .glow { position:fixed; inset:0; box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--c) 90%, transparent), inset 0 0 22px color-mix(in srgb, var(--c) 50%, transparent);
           animation: glow 3s ease-in-out infinite; }
-        @keyframes glow { 50% { box-shadow: inset 0 0 0 2px rgba(217,119,87,.6), inset 0 0 14px rgba(217,119,87,.3); } }
+        @keyframes glow { 50% { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--c) 60%, transparent), inset 0 0 14px color-mix(in srgb, var(--c) 30%, transparent); } }
         .label { position:fixed; left:50%; bottom:14px; transform:translateX(-50%); display:flex; align-items:center; gap:8px;
           padding:7px 14px; border-radius:999px; background:rgba(28,25,23,.92); color:#fff; max-width:80vw;
           font:500 13px/1.2 system-ui, sans-serif; box-shadow:0 2px 10px rgba(0,0,0,.3); white-space:nowrap; }
         .label .text { overflow:hidden; text-overflow:ellipsis; }
-        .dot { flex:none; width:8px; height:8px; border-radius:50%; background:rgb(217,119,87); animation: dot 1.6s ease-in-out infinite; }
+        .dot { flex:none; width:8px; height:8px; border-radius:50%; background:var(--c); animation: dot 1.6s ease-in-out infinite; }
         @keyframes dot { 50% { opacity:.35; } }
         .pointer { position:fixed; left:0; top:0; width:22px; height:22px; }
         .cursor { width:22px; height:22px; filter:drop-shadow(0 1px 2px rgba(0,0,0,.45)); }
@@ -348,21 +373,21 @@ function overlayRoot() {
         .think i { width:5px; height:5px; border-radius:50%; background:#fff; animation: think 1s ease-in-out infinite; }
         .think i:nth-child(2) { animation-delay:.15s } .think i:nth-child(3) { animation-delay:.3s }
         @keyframes think { 0%,100% { transform:translateY(0); opacity:.4 } 50% { transform:translateY(-3px); opacity:1 } }
-        .pointer.reading .badge.read { display:block; width:26px; height:3px; border-radius:2px; background:rgba(217,119,87,.35); overflow:hidden; }
-        .read b { display:block; width:9px; height:3px; background:rgb(217,119,87); animation: read .9s linear infinite; }
+        .pointer.reading .badge.read { display:block; width:26px; height:3px; border-radius:2px; background:color-mix(in srgb, var(--c) 35%, transparent); overflow:hidden; }
+        .read b { display:block; width:9px; height:3px; background:var(--c); animation: read .9s linear infinite; }
         @keyframes read { from { transform:translateX(-9px) } to { transform:translateX(26px) } }
         .pointer.waiting .badge.wait { display:block; width:14px; height:14px; border-radius:50%;
-          border:2px solid rgba(217,119,87,.3); border-top-color:rgb(217,119,87); animation: spin .8s linear infinite; }
+          border:2px solid color-mix(in srgb, var(--c) 30%, transparent); border-top-color:var(--c); animation: spin .8s linear infinite; }
         @keyframes spin { to { transform:rotate(360deg) } }
-        .pointer.typing .badge.type { display:block; width:2px; height:14px; background:rgb(217,119,87); animation: blink .8s steps(1) infinite; }
+        .pointer.typing .badge.type { display:block; width:2px; height:14px; background:var(--c); animation: blink .8s steps(1) infinite; }
         @keyframes blink { 50% { opacity:0 } }
-        .pointer.working .badge.work { display:block; width:10px; height:10px; border-radius:50%; background:rgb(217,119,87); animation: dot 1s ease-in-out infinite; }
+        .pointer.working .badge.work { display:block; width:10px; height:10px; border-radius:50%; background:var(--c); animation: dot 1s ease-in-out infinite; }
         .ripple { position:fixed; width:28px; height:28px; margin:-14px 0 0 -14px; border-radius:50%;
-          border:2px solid rgb(217,119,87); animation:ripple .45s ease-out forwards; }
+          border:2px solid var(--c); animation:ripple .45s ease-out forwards; }
         @keyframes ripple { from { transform:scale(.3); opacity:1; } to { transform:scale(1.4); opacity:0; } }
-        .field { position:fixed; display:none; border-radius:6px; box-shadow:0 0 0 2px rgb(217,119,87), 0 0 14px 2px rgba(217,119,87,.55);
+        .field { position:fixed; display:none; border-radius:6px; box-shadow:0 0 0 2px var(--c), 0 0 14px 2px color-mix(in srgb, var(--c) 55%, transparent);
           animation:field-pulse 1.2s ease-in-out infinite; }
-        @keyframes field-pulse { 50% { box-shadow:0 0 0 2px rgb(217,119,87), 0 0 4px 1px rgba(217,119,87,.3); } }
+        @keyframes field-pulse { 50% { box-shadow:0 0 0 2px var(--c), 0 0 4px 1px color-mix(in srgb, var(--c) 30%, transparent); } }
         @media (prefers-reduced-motion: reduce) { * { animation:none !important; } }
       </style>
       <div class="glow"></div>
@@ -370,7 +395,7 @@ function overlayRoot() {
       <div class="label"><span class="dot"></span><span class="text"></span></div>
       <div class="pointer idle">
         <svg class="cursor" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg">
-          <path d="M2 1.5 L2 18 L6.6 13.9 L9.6 20.5 L12.5 19.2 L9.6 12.7 L15.8 12.7 Z" fill="rgb(217,119,87)" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/>
+          <path d="M2 1.5 L2 18 L6.6 13.9 L9.6 20.5 L12.5 19.2 L9.6 12.7 L15.8 12.7 Z" style="fill:var(--c)" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/>
         </svg>
         <span class="badge think"><i></i><i></i><i></i></span>
         <span class="badge read"><b></b></span>
@@ -380,6 +405,7 @@ function overlayRoot() {
       </div>`;
     root.querySelector('.label .text').textContent = agentLabel;
     document.documentElement.appendChild(host);
+    applyOverlaySettings();
   }
   return host;
 }
@@ -406,13 +432,14 @@ function setLabel(text) {
 // state: what the cursor shows; label: the line under it. Both are optional,
 // so a page action can show the overlay without changing what was said.
 function showOverlay(state, label) {
+  if (!settings.overlayEnabled) return;
   const host = overlayRoot();
   host.style.opacity = '1';
   host.style.visibility = 'visible';
   placeCursor(host.shadowRoot);
   if (state) setCursorState(state);
   if (label) setLabel(label);
-  startTabMarker();
+  if (settings.tabMarker) startTabMarker();
 }
 
 function hideOverlay() {
@@ -481,11 +508,12 @@ async function buildMarkerFrames() {
     if (icon) {
       ctx.drawImage(icon, 14, 14, 36, 36);
     } else {
-      ctx.fillStyle = 'rgb(217,119,87)';
+      ctx.fillStyle = settings.overlayColor;
       ctx.beginPath(); ctx.arc(32, 32, 12, 0, Math.PI * 2); ctx.fill();
     }
     ctx.lineWidth = 6 + pulse * 3;
-    ctx.strokeStyle = `rgba(217,119,87,${0.55 + pulse * 0.45})`;
+    ctx.globalAlpha = 0.55 + pulse * 0.45;
+    ctx.strokeStyle = settings.overlayColor;
     ctx.beginPath(); ctx.arc(32, 32, 27, 0, Math.PI * 2); ctx.stroke();
     frames.push(canvas.toDataURL('image/png'));
   }
@@ -518,6 +546,74 @@ function stopTabMarker() {
   markerLinks = null;
 }
 
+// The cursor moves the way a hand on a mouse does, after the motor-control
+// research on pointing:
+// - Fitts' law: the move takes longer the farther and smaller the target,
+//   a + b * log2(distance / width + 1).
+// - A fast first submovement with a bell-shaped speed (minimum jerk), skewed so
+//   it speeds up quicker than it slows down, along a slight arc; on longer moves
+//   it usually stops a little short of the target and now and then past it.
+// - One small corrective submovement onto the target, a faint tremor, and a
+//   short pause to check the target before a click.
+const FITTS_A_MS = 120;
+const FITTS_B_MS = 110;
+const MIN_MOVE_MS = 180;
+const MAX_MOVE_MS = 900;
+const CORRECTION_SHARE = 0.22; // of the move's time, spent on the correction
+const CHECK_PAUSE_MS = [70, 160];
+
+const minimumJerk = t => t * t * t * (10 - 15 * t + 6 * t * t);
+const between = ([low, high]) => low + Math.random() * (high - low);
+
+function humanPath(from, to, targetSize) {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const distance = Math.hypot(dx, dy);
+  const human = settings.cursorMotion !== 'direct';
+  const duration = (CURSOR_SPEEDS[settings.cursorSpeed] || 1) * Math.min(MAX_MOVE_MS, Math.max(MIN_MOVE_MS,
+    FITTS_A_MS + FITTS_B_MS * Math.log2(distance / Math.max(targetSize, 8) + 1)));
+  // Where the first submovement ends: short of the target 70% of the time.
+  // "Direct" motion (a setting) goes straight there in one smooth move.
+  const corrects = human && distance > 80;
+  const miss = corrects ? (Math.random() < 0.7 ? -1 : 1) * between([0.03, 0.08]) : 0;
+  const sway = corrects ? Math.min(6, targetSize / 4) : 0;
+  const land = {
+    x: to.x + dx * miss + (Math.random() - 0.5) * sway,
+    y: to.y + dy * miss + (Math.random() - 0.5) * sway,
+  };
+  // The arc: a control point off the straight line, to either side
+  const bend = human ? (Math.random() < 0.5 ? -1 : 1) * distance * between([0.04, 0.12]) : 0;
+  const control = {
+    x: (from.x + land.x) / 2 - (dy / distance) * bend,
+    y: (from.y + land.y) / 2 + (dx / distance) * bend,
+  };
+  const points = [];
+  const primaryShare = corrects ? 1 - CORRECTION_SHARE : 1;
+  const steps = Math.max(12, Math.round(duration * primaryShare / 16));
+  for (let i = 0; i <= steps; i++) {
+    const s = minimumJerk(Math.pow(i / steps, 0.85));
+    const tremor = human && i < steps ? 0.6 : 0;
+    points.push({
+      x: (1 - s) * (1 - s) * from.x + 2 * (1 - s) * s * control.x + s * s * land.x + (Math.random() - 0.5) * tremor,
+      y: (1 - s) * (1 - s) * from.y + 2 * (1 - s) * s * control.y + s * s * land.y + (Math.random() - 0.5) * tremor,
+      offset: (i / steps) * primaryShare,
+    });
+  }
+  if (corrects) {
+    const fix = Math.max(4, Math.round(duration * CORRECTION_SHARE / 16));
+    for (let i = 1; i <= fix; i++) {
+      const s = minimumJerk(i / fix);
+      points.push({
+        x: land.x + (to.x - land.x) * s,
+        y: land.y + (to.y - land.y) * s,
+        offset: primaryShare + (i / fix) * CORRECTION_SHARE,
+      });
+    }
+  }
+  points[points.length - 1] = { ...to, offset: 1 };
+  return { points, duration };
+}
+
 async function moveCursorTo(el, press) {
   el.scrollIntoView({ block: 'center', inline: 'center' });
   const rect = el.getBoundingClientRect();
@@ -526,14 +622,20 @@ async function moveCursorTo(el, press) {
   cursorPos = to;
   const root = overlayRoot().shadowRoot;
   const pointer = root.querySelector('.pointer');
+  pointer.getAnimations().forEach(animation => animation.cancel());
   pointer.style.transition = 'none';
-  pointer.style.transform = `translate(${from.x}px, ${from.y}px)`;
-  pointer.getBoundingClientRect();
-  pointer.style.transition = `transform ${CURSOR_MOVE_MS}ms cubic-bezier(.3,.7,.4,1)`;
   pointer.style.transform = `translate(${to.x}px, ${to.y}px)`;
   // Nobody sees a hidden tab, and Firefox holds its timers back for seconds
-  if (!document.hidden) await new Promise(resolve => setTimeout(resolve, CURSOR_MOVE_MS));
+  if (document.hidden || !settings.overlayEnabled || !settings.cursorEnabled) return;
+  if (Math.hypot(to.x - from.x, to.y - from.y) >= 2) {
+    const { points, duration } = humanPath(from, to, Math.min(rect.width, rect.height));
+    const motion = pointer.animate(
+      points.map(({ x, y, offset }) => ({ transform: `translate(${x}px, ${y}px)`, offset })),
+      { duration, easing: 'linear' });
+    await motion.finished.catch(() => {});
+  }
   if (press) {
+    if (settings.cursorMotion !== 'direct') await new Promise(resolve => setTimeout(resolve, between(CHECK_PAUSE_MS)));
     const ripple = document.createElement('div');
     ripple.className = 'ripple';
     ripple.style.left = to.x + 'px';
