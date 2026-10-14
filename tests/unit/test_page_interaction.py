@@ -14,6 +14,7 @@ import pytest
 
 import test_imports  # Automatic path setup
 from server.mcp_tools import FoxMCPTools, UPLOAD_CHUNK_BYTES
+from fastmcp.exceptions import ToolError
 
 
 class StubWebSocketServer:
@@ -39,7 +40,10 @@ def call_tool(stub_server):
 
     async def call(name, **kwargs):
         tool = await tools.mcp.get_tool(name)
-        return await tool.fn(**kwargs)
+        try:
+            return await tool.fn(**kwargs)
+        except ToolError as error:  # what the client sees as the error text
+            return str(error)
 
     return call
 
@@ -157,7 +161,10 @@ class TestUploadFiles:
 
         async def call(**kwargs):
             tool = await tools.mcp.get_tool("content_upload_files")
-            return await tool.fn(**kwargs)
+            try:
+                return await tool.fn(**kwargs)
+            except ToolError as error:  # what the client sees as the error text
+                return str(error)
 
         return call
 
@@ -221,3 +228,23 @@ class TestUploadFiles:
 
         assert result.endswith("does not exist")
         assert recorder.requests == []
+
+
+class TestFailuresAreErrors:
+    """A failed step reaches the client as an MCP error, not as a result it
+    would take for success"""
+
+    @pytest.mark.asyncio
+    async def test_a_failed_type_raises(self, stub_server):
+        stub_server.response = {"type": "error", "error": "Only part of the text arrived"}
+        tool = await FoxMCPTools(stub_server).mcp.get_tool("content_type")
+
+        with pytest.raises(ToolError, match="Failed to type: Only part of the text arrived"):
+            await tool.fn(tab_id=4, text="hello", selector="#t")
+
+    @pytest.mark.asyncio
+    async def test_a_successful_type_returns(self, stub_server):
+        stub_server.response = {"type": "response", "data": {"typed": '[r1] input "Name"'}}
+        tool = await FoxMCPTools(stub_server).mcp.get_tool("content_type")
+
+        assert await tool.fn(tab_id=4, text="hello", selector="#t") == 'Typed into [r1] input "Name"'

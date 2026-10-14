@@ -13,6 +13,7 @@ import functools
 import inspect
 import logging
 import mimetypes
+import re
 import uuid
 import os
 import subprocess
@@ -23,6 +24,7 @@ from datetime import datetime
 from typing import Annotated, Dict, Any, Optional, List, TypedDict, Union
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -44,6 +46,9 @@ UPLOAD_CHUNK_BYTES = 512 * 1024
 # The tool running and the status line its caller gave, read by
 # send_request_and_wait so every request a tool sends carries them to the page.
 AGENT_CALL = contextvars.ContextVar('agent_call', default=None)
+
+# How a tool's text result reads when the tool failed
+FAILURE_RESULT = re.compile(r"(Failed to|Unable to|Error |Unexpected error|Window \S+ not found)")
 
 # The overlay label is one line; a status longer than this is cut.
 MAX_STATUS_LENGTH = 80
@@ -261,9 +266,25 @@ class FoxMCPTools:
             self.group_by_tool[fn.__name__] = group
             if group in self.disabled_groups and fn.__name__ not in self.enabled_tools:
                 return fn
-            return self.mcp.tool()(self._with_status(fn))
+            return self.mcp.tool()(self._with_status(self._failures_as_errors(fn)))
 
         return register
+
+    def _failures_as_errors(self, fn):
+        """Report a tool's failure as an MCP error rather than as a result
+
+        Tools say what went wrong in plain text ("Failed to type: ..."), and a
+        client took that for success, so an agent moved on after a step that
+        never happened. A result that starts like a failure is raised instead,
+        and the client sees isError with the same text.
+        """
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            result = await fn(*args, **kwargs)
+            if isinstance(result, str) and FAILURE_RESULT.match(result):
+                raise ToolError(result)
+            return result
+        return wrapper
 
     def _with_status(self, fn):
         """Give a tool the optional `status` argument shown to the person watching
