@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-10-14
+
+### Added
+- **A Claude Code plugin, and setup by asking Claude.** The repo is now a plugin marketplace: `claude plugin marketplace add MashdorDev/mcp-bridge-for-firefox` and `claude plugin install firefox@mcp-bridge-for-firefox` (or the `/plugin` menu) set the server up, and Claude Code starts it in every session. With nothing to connect to, the add-on's popup now offers a request to copy into Claude Code, "Set up MCP Bridge for Firefox from github.com/MashdorDev/mcp-bridge-for-firefox", and the README carries the steps an agent follows, so nobody has to type a command.
+
 ## [1.8.0] - 2026-10-14
 
 ### Added
