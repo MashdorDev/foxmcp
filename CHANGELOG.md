@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-10-14
+
+### Added
+- **The server installs and registers in one command.** It is now a Python package, so `claude mcp add firefox -- uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.7.2 mcp-bridge-for-firefox --stdio` sets it up on a new computer with no clone or virtualenv. Installing only the add-on left a second machine with nothing to connect to and no hint why; the toolbar popup now shows that command, pinned to the add-on's version and with a Copy button, whenever it is not connected.
+
 ## [1.7.1] - 2026-10-14
 
 ### Added
