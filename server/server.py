@@ -126,6 +126,8 @@ class BrowserConnection:
     real_input_port: int = 0
     real_input_found: int = 0
     real_input_missed_at: float = 0.0
+    # The tab the agent last named, which a screenshot shows by default
+    last_tab: Optional[int] = None
 
 
 class FoxMCPServer:
@@ -661,7 +663,15 @@ class FoxMCPServer:
         try:
             self.agent_tabs[int(tab_id)] = session_id or self.NO_MCP_SESSION
         except (TypeError, ValueError):
-            pass
+            return
+        browser = self.browsers.get(self.active_browser)
+        if browser:
+            browser.last_tab = int(tab_id)
+
+    def last_agent_tab(self) -> Optional[int]:
+        """The tab the agent last acted on in the active browser"""
+        browser = self.browsers.get(self.active_browser)
+        return browser.last_tab if browser else None
 
     def forget_agent_tab(self, tab_id: Any):
         """Drop a tab its client released itself"""
