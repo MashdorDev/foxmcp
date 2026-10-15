@@ -193,6 +193,14 @@ class FoxMCPServer:
         # ids and monitors vanished between calls.
         self.browsers: Dict[str, BrowserConnection] = {}
         self.active_browser: Optional[str] = None
+        # The active browser stays active while it is away, so its tab ids
+        # never start meaning tabs in another profile: when Lost Tribe restarted
+        # for an add-on update, tools moved to the main profile and a "tab 1"
+        # navigation replaced the person's own home tab. Only browsers_select
+        # moves the agent to a browser that is already connected; a browser no
+        # one chose is replaced only by one arriving to an empty server.
+        self.active_browser_name = ''
+        self.browser_chosen = False
         self._browsers_seen = 0
         # Which browser each request monitor runs in, so calls naming the
         # monitor reach it even after another browser is selected.
@@ -325,10 +333,24 @@ class FoxMCPServer:
                 self.monitor_owners.pop(monitor_id, None)
 
         if self.active_browser == browser.key:
-            # Fall back to the browser that connected most recently.
-            self.active_browser = next(reversed(self.browsers), None)
-            if self.active_browser:
-                logger.info(f"Active browser is now {self.browsers[self.active_browser].name}")
+            self.active_browser_name = browser.name
+            logger.warning(f"Active browser {browser.name} disconnected; tools wait for it or for browsers_select")
+
+    def _may_take_over(self) -> bool:
+        """Whether a browser arriving may become the active one"""
+        if self.active_browser is None:
+            return True
+        return (self.active_browser not in self.browsers and not self.browser_chosen
+                and len(self.browsers) == 1)
+
+    def no_browser_reason(self) -> str:
+        """Why there is no browser to act on, and what would fix it"""
+        if self.active_browser is None or not self.active_browser_name:
+            return "No extension connection available"
+        others = ', '.join(f'"{b.name}"' for b in self.browsers.values())
+        choice = f" Connected now: {others}; browsers_select one of them to act on it instead." if others else ""
+        return (f'The selected browser "{self.active_browser_name}" is disconnected. Tools act on it again '
+                f'when it reconnects.{choice}')
 
     def _handle_hello(self, websocket, data: Dict[str, Any]):
         """Name a connection and key it by the profile's id
@@ -365,8 +387,10 @@ class FoxMCPServer:
             if key == browser.key:
                 self.monitor_browsers[monitor_id] = instance_id
         browser.key = instance_id
-        if was_active or self.active_browser not in self.browsers:
+        if was_active or (self.active_browser not in self.browsers and self._may_take_over()):
             self.active_browser = instance_id
+        if self.active_browser == instance_id:
+            self.active_browser_name = browser.name
         logger.info(f"Browser {browser.name} ({instance_id[:8]}) said hello, add-on {browser.version}")
 
     def select_browser(self, query: str) -> BrowserConnection:
@@ -380,20 +404,22 @@ class FoxMCPServer:
             problem = 'matches more than one browser' if matches else 'matches no browser'
             raise ValueError(f'"{query}" {problem}. Connected: {names}')
         self.active_browser = matches[0].key
+        self.active_browser_name = matches[0].name
+        self.browser_chosen = True
         return matches[0]
 
     async def handle_extension_connection(self, websocket):
         """Handle a WebSocket connection from a browser running the add-on
 
         Several browsers may be connected at once. The first becomes active;
-        later ones wait until selected with browsers_select, or until the active
-        one disconnects.
+        later ones wait until selected with browsers_select.
         """
         logger.info(f"Extension connected from {websocket.remote_address}")
 
         browser = self._add_browser(websocket)
-        if self.active_browser is None:
+        if self._may_take_over():
             self.active_browser = browser.key
+            self.active_browser_name = browser.name
 
         # Notify all waiters that a connection has been established
         self._notify_connection_waiters()
@@ -549,7 +575,7 @@ class FoxMCPServer:
             raise ValueError("Request must have an ID")
 
         if not self.extension_connection:
-            return {"error": "No extension connection available"}
+            return {"error": self.no_browser_reason()}
 
         # The tool this request comes from, and the status line its caller gave,
         # so the extension can show on the page what the agent is doing
@@ -1067,6 +1093,8 @@ class FoxMCPServer:
                         logger.warning(f"Error closing extension connection: {e}")
                 self.browsers.clear()
                 self.active_browser = None
+                self.active_browser_name = ''
+                self.browser_chosen = False
 
                 # close() only starts the shutdown; wait_closed() is what
                 # actually releases the port. Bounded so a connection that

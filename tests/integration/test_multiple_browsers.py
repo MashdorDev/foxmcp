@@ -4,8 +4,8 @@ Several Firefox profiles connected to one server at once
 The server used to keep one connection and close it whenever another arrived.
 Two profiles running the add-on then reconnected over each other every few
 seconds, so a tab id from one call was gone by the next. Now every browser stays
-connected, a newcomer never takes over, and browsers_select picks the one tools
-act on.
+connected, a newcomer never takes over, the chosen one stays chosen while it
+is away, and browsers_select picks the one tools act on.
 """
 
 import asyncio
@@ -99,15 +99,52 @@ async def test_an_unknown_name_is_refused_with_the_choices(server):
 
 
 @pytest.mark.asyncio
-async def test_active_browser_leaving_hands_over(server):
+async def test_the_chosen_browser_leaving_does_not_hand_over(server):
+    """Tab ids of the chosen browser must never reach another one"""
     async with connect_as_extension(uri(server)) as other:
-        await hello(other, "bbbb2222", "Lost Tribe")
-        async with connect_as_extension(uri(server)) as main:
-            await hello(main, "aaaa1111", "Main")
-            server.select_browser("Main")
+        await hello(other, "bbbb2222", "Main")
+        async with connect_as_extension(uri(server)) as lost_tribe:
+            await hello(lost_tribe, "aaaa1111", "Lost Tribe")
+            server.select_browser("Lost Tribe")
         await asyncio.sleep(0.3)
 
         assert set(server.browsers) == {"bbbb2222"}
+        assert server.active_browser == "aaaa1111"
+        answer = await server.send_request_and_wait({"id": "nav", "type": "request", "action": "ping", "data": {}})
+        assert 'The selected browser "Lost Tribe" is disconnected' in answer["error"]
+        assert '"Main"' in answer["error"]
+        assert await received(other, timeout=0.3) is None
+
+        # The same profile coming back is acted on again
+        async with connect_as_extension(uri(server)) as back:
+            await hello(back, "aaaa1111", "Lost Tribe")
+            assert server.active_browser == "aaaa1111"
+            await ping(server)
+            assert (await received(back))["id"] == "probe"
+
+
+@pytest.mark.asyncio
+async def test_another_profile_waits_while_the_chosen_one_is_away(server):
+    async with connect_as_extension(uri(server)) as lost_tribe:
+        await hello(lost_tribe, "aaaa1111", "Lost Tribe")
+        server.select_browser("Lost Tribe")
+    await asyncio.sleep(0.3)
+    async with connect_as_extension(uri(server)) as main:
+        await hello(main, "bbbb2222", "Main")
+        assert server.active_browser == "aaaa1111"
+        server.select_browser("Main")
+        await ping(server)
+        assert (await received(main))["id"] == "probe"
+
+
+@pytest.mark.asyncio
+async def test_a_browser_no_one_chose_is_replaced_on_an_empty_server(server):
+    """One profile closed and another opened: nothing to confuse it with"""
+    async with connect_as_extension(uri(server)) as first:
+        await hello(first, "aaaa1111", "Main")
+    await asyncio.sleep(0.3)
+    async with connect_as_extension(uri(server)) as second:
+        await hello(second, "bbbb2222", "Work")
         assert server.active_browser == "bbbb2222"
 
 
