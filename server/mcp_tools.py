@@ -1662,8 +1662,11 @@ class FoxMCPTools:
             """
             server = self.websocket_server
             browsers = list(getattr(server, 'browsers', {}).values())
+            away = ""
+            if server.active_browser and server.active_browser not in server.browsers:
+                away = f"\n{server.no_browser_reason()}"
             if not browsers:
-                return "No browser is connected"
+                return "No browser is connected" + away
 
             lines = []
             for browser in browsers:
@@ -1672,7 +1675,7 @@ class FoxMCPTools:
                 minutes = int((time.time() - browser.connected_at) // 60)
                 lines.append(f"- {browser.name}{active}: id {browser.key[:8]}{version}, "
                              f"connected {minutes} min ago")
-            return f"Connected browsers ({len(browsers)}):\n" + "\n".join(lines)
+            return f"Connected browsers ({len(browsers)}):\n" + "\n".join(lines) + away
 
         @self._tool()
         async def browsers_select(browser: str) -> str:
