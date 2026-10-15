@@ -243,7 +243,7 @@ foxmcp/
 ## Packaging and Plugin
 
 ### `pyproject.toml`
-- **Purpose**: Makes the server an installable Python package, so `uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.11.0 mcp-bridge-for-firefox --stdio` runs it with no clone
+- **Purpose**: Makes the server an installable Python package, so `uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.11.1 mcp-bridge-for-firefox --stdio` runs it with no clone
 - **Key Features**: Python 3.10 or newer; the code in `server/` is installed as the `mcp_bridge_for_firefox` package; the `mcp-bridge-for-firefox` command runs `server.run`
 
 ### `.claude-plugin/marketplace.json`

@@ -1178,27 +1178,38 @@ class FoxMCPTools:
             filename: Optional[str] = None,
             window_id: Optional[int] = None,
             format: str = "png",
-            quality: int = 90
+            quality: int = 90,
+            tab_id: Optional[int] = None
         ) -> Union[str, Image]:
-            """Capture a screenshot of the visible tab
+            """Capture a screenshot of a tab
 
             Without a filename the image comes back to you to look at. With one it
             is saved to disk and you get the full path; a bare name is saved in the
             system's temporary folder, not in the current directory.
 
+            With no tab_id or window_id it captures the tab you last acted on, not
+            whichever window has focus (that may be another app the person is in).
+
             Args:
                 filename: File to save the screenshot to (optional)
-                window_id: ID of the window to capture (optional, defaults to current window)
+                window_id: Capture the tab showing in this window (optional)
+                tab_id: Capture this tab (optional; defaults to the last tab you used)
                 format: Image format ('png' or 'jpeg', default: 'png'); jpeg is much
                     smaller to look at
                 quality: Image quality for JPEG format (1-100, default: 90)
             """
+            last_agent_tab = getattr(self.websocket_server, 'last_agent_tab', None)
+            default_tab = None
+            if tab_id is None and not window_id and last_agent_tab:
+                default_tab = last_agent_tab()
             request = {
                 "id": str(uuid.uuid4()),
                 "type": "request",
                 "action": "tabs.captureVisibleTab",
                 "data": {
                     **({"windowId": window_id} if window_id else {}),
+                    **({"tabId": tab_id} if tab_id is not None else {}),
+                    **({"tabId": default_tab, "tabIdOptional": True} if default_tab is not None else {}),
                     "format": format,
                     "quality": quality
                 },
@@ -1214,7 +1225,9 @@ class FoxMCPTools:
                 data_url = response["data"].get("dataUrl", "")
                 captured_format = response["data"].get("format", format)
                 captured_quality = response["data"].get("quality", quality)
-                captured_window_id = response["data"].get("windowId", "current")
+                captured_window_id = response["data"].get("windowId") or "current"
+                captured_tab = response["data"].get("tabId")
+                shown = f"tab {captured_tab}, window {captured_window_id}" if captured_tab else f"window {captured_window_id}"
 
                 if not data_url:
                     return "No screenshot data received"
@@ -1242,7 +1255,7 @@ class FoxMCPTools:
                             f.write(image_data)
 
                         file_size = len(image_data)
-                        return f"Screenshot saved to '{filename}' (window {captured_window_id}, {captured_format}, quality: {captured_quality}, size: {file_size} bytes)"
+                        return f"Screenshot saved to '{filename}' ({shown}, {captured_format}, quality: {captured_quality}, size: {file_size} bytes)"
 
                     except Exception as e:
                         return f"Error saving screenshot to file '{filename}': {str(e)}"

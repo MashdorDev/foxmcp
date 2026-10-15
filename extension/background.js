@@ -443,7 +443,7 @@ async function refusalFor(action, data) {
   const urls = [];
   if (data.url) urls.push({ url: data.url });
   let tabId = data.tabId;
-  if (action === 'tabs.captureVisibleTab') {
+  if (action === 'tabs.captureVisibleTab' && tabId == null) {
     const [active] = await browser.tabs.query({ active: true, ...(data.windowId ? { windowId: data.windowId } : { currentWindow: true }) });
     tabId = active && active.id;
   }
@@ -867,9 +867,21 @@ async function handleTabsAction(id, action, data) {
           quality: data.quality || 90
         };
 
+        // A named tab is captured itself, whichever window has focus: the
+        // "current window" is wherever the person is working, which once
+        // was another app's window and not the page the agent was on
+        let wantedTab = null;
+        if (data.tabId != null) {
+          wantedTab = await browser.tabs.get(Number(data.tabId)).catch(() => null);
+          if (!wantedTab && !data.tabIdOptional) {
+            sendError(id, 'CAPTURE_ERROR', `No tab with id ${data.tabId}`);
+            break;
+          }
+        }
+
         // The agent overlay sits on top of the page in the tab being captured;
         // hide it for the capture. Tabs without content.js simply have none.
-        const [shownTab] = await browser.tabs.query(
+        const [shownTab] = wantedTab ? [wantedTab] : await browser.tabs.query(
           windowId ? { active: true, windowId } : { active: true, currentWindow: true });
         const setOverlay = (visible) => shownTab
           ? browser.tabs.sendMessage(shownTab.id, { action: 'overlayVisibility', data: { visible } })
@@ -878,13 +890,17 @@ async function handleTabsAction(id, action, data) {
 
         try {
           await setOverlay(false);
-          const dataUrl = await browser.tabs.captureVisibleTab(windowId, options)
+          const dataUrl = await (wantedTab
+            ? browser.tabs.captureTab(wantedTab.id, options)
+            : browser.tabs.captureVisibleTab(windowId, options))
             .finally(() => setOverlay(true));
           sendResponse(id, action, {
             dataUrl: dataUrl,
             format: options.format,
             quality: options.quality,
-            windowId: windowId
+            windowId: shownTab ? shownTab.windowId : windowId,
+            tabId: shownTab ? shownTab.id : null,
+            title: shownTab ? shownTab.title : ''
           });
         } catch (captureError) {
           sendError(id, 'CAPTURE_ERROR', `Failed to capture screenshot: ${captureError.message}`);

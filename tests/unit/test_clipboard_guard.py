@@ -131,3 +131,26 @@ class TestScreenshots:
         server.response = {"type": "response", "data": {"dataUrl": f"data:image/png;base64,{png}", "format": "png"}}
         result = await call_tool("tabs_capture_screenshot")
         assert isinstance(result, Image)
+
+    @pytest.mark.asyncio
+    async def test_by_default_the_last_tab_used_is_captured(self, call_tool, server):
+        """Not the focused window, which may be another app the person is in"""
+        server.last_agent_tab = lambda: 42
+        png = base64.b64encode(b"\x89PNG fake").decode()
+        server.response = {"type": "response",
+                           "data": {"dataUrl": f"data:image/png;base64,{png}", "format": "png", "tabId": 42, "windowId": 7}}
+        result = await call_tool("tabs_capture_screenshot", filename="tab.png")
+        sent = server.requests[-1]["data"]
+        assert sent["tabId"] == 42 and sent["tabIdOptional"] is True
+        assert "(tab 42, window 7," in result
+
+    @pytest.mark.asyncio
+    async def test_a_named_window_or_tab_wins_over_the_default(self, call_tool, server):
+        server.last_agent_tab = lambda: 42
+        png = base64.b64encode(b"\x89PNG fake").decode()
+        server.response = {"type": "response", "data": {"dataUrl": f"data:image/png;base64,{png}", "format": "png"}}
+        await call_tool("tabs_capture_screenshot", window_id=3)
+        assert "tabId" not in server.requests[-1]["data"]
+        await call_tool("tabs_capture_screenshot", tab_id=9)
+        sent = server.requests[-1]["data"]
+        assert sent["tabId"] == 9 and "tabIdOptional" not in sent

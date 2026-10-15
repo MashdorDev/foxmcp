@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.1] - 2026-10-14
+
+### Fixed
+- **The chosen browser stays chosen.** When the browser picked with `browsers_select` disconnects, tools no longer move to another connected profile. Calls fail with its name and the browsers that are connected until it comes back or another is selected. After an add-on update restarted one profile, tab ids from it had been sent to the person's main profile.
+- **Screenshots show the agent's tab.** `tabs_capture_screenshot` with no tab or window captures the tab the agent last acted on, even a background one, instead of whichever window had focus. It also takes a `tab_id`.
+
 ## [1.11.0] - 2026-10-14
 
 ### Added
