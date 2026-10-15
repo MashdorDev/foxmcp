@@ -35,7 +35,7 @@ works in. Set each profile's name on the add-on's options page. Details:
 
 ### 1. The add-on
 
-Install **MCP Bridge for Firefox** from Firefox Add-ons (listing in review). Until then, install the signed build from this repo's releases: download [mcp-bridge-for-firefox-1.11.0.xpi](https://github.com/MashdorDev/mcp-bridge-for-firefox/releases/download/v1.11.0/mcp-bridge-for-firefox-1.11.0.xpi) and open it in Firefox.
+Install **MCP Bridge for Firefox** from Firefox Add-ons (listing in review). Until then, install the signed build from this repo's releases: download [mcp-bridge-for-firefox-1.11.1.xpi](https://github.com/MashdorDev/mcp-bridge-for-firefox/releases/download/v1.11.1/mcp-bridge-for-firefox-1.11.1.xpi) and open it in Firefox.
 
 ### 2. The MCP server
 
@@ -53,7 +53,7 @@ claude plugin install firefox@mcp-bridge-for-firefox
 **Or register the server directly** (needs [uv](https://docs.astral.sh/uv/)):
 
 ```bash
-claude mcp add firefox -- uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.11.0 mcp-bridge-for-firefox --stdio
+claude mcp add firefox -- uvx --from git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.11.1 mcp-bridge-for-firefox --stdio
 ```
 
 Either way, restart Claude Code (or run `/mcp` and reconnect) for the browser tools to appear.
@@ -75,7 +75,7 @@ Any client that reads an `mcp.json` (Cursor, Claude Desktop, VS Code):
   "mcpServers": {
     "firefox": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.11.0", "mcp-bridge-for-firefox", "--stdio"]
+      "args": ["--from", "git+https://github.com/MashdorDev/mcp-bridge-for-firefox@v1.11.1", "mcp-bridge-for-firefox", "--stdio"]
     }
   }
 }

@@ -56,7 +56,8 @@ it, which keeps the tool list shorter.
 - `tabs_ungroup(tab_ids)` - Take tabs out of their group
 - `tabs_groups_update(group_id, title=None, color=None, collapsed=None)` - Change a group's title, colour or collapsed state
 - `tabs_groups_query(window_id=None, title=None, color=None, collapsed=None)` - List tab groups and their IDs
-- `tabs_capture_screenshot(filename=None, window_id=None, format="png", quality=90)` - Capture screenshot of visible tab
+- `tabs_capture_screenshot(filename=None, window_id=None, format="png", quality=90, tab_id=None)` - Capture a tab
+  - With no `tab_id` or `window_id` it captures the tab the agent last acted on, even in the background, not the window that has focus
   - Without `filename` the image itself comes back, for the client to show the model
   - With `filename` it is saved and the result gives the full path; a bare name goes
     to `<temp>/mcp-bridge-for-firefox/screenshots/`, not the server's working folder
